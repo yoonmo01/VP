@@ -1,0 +1,48 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Builds / dists
+build/
+dist/
+*.egg-info/
+
+# Testing / tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+logs/
+*.log
+
+# Local data (keep placeholder if needed)
+data/
+!data/.gitkeep
+
+# Environment / secrets
+.env
+.env.*
+*.env
+secrets/
+*_secret*
+*secret*.json
+
+# Alembic (generated cache & pyc are covered by patterns above)
+alembic/__pycache__/
