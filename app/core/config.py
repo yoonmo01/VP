@@ -1,8 +1,15 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import AnyHttpUrl
 from typing import List
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",          # 알 수 없는 키 무시(선택)
+    )
+    
+    
     APP_ENV: str = "local"
     APP_NAME: str = "VoicePhish Sim"
     API_PREFIX: str = "/api"
