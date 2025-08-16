@@ -1,11 +1,11 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any
 
 class VictimCreate(BaseModel):
     name: str
-    meta: dict[str, Any] = {}
-    knowledge: dict[str, Any] = {}
-    traits: dict[str, Any] = {}
+    meta: dict[str, Any] = Field(default_factory=dict)       # ✅
+    knowledge: dict[str, Any] = Field(default_factory=dict)  # ✅
+    traits: dict[str, Any] = Field(default_factory=dict)     # ✅
 
 class VictimOut(BaseModel):
     id: int
@@ -13,5 +13,5 @@ class VictimOut(BaseModel):
     meta: dict
     knowledge: dict
     traits: dict
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)

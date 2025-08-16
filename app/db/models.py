@@ -1,12 +1,11 @@
 from __future__ import annotations
 from sqlalchemy import (
-    Column, Integer, String, Boolean, Text, ForeignKey, TIMESTAMP, JSON, Index, UniqueConstraint
+    Column, Integer, String, Boolean, Text, ForeignKey, TIMESTAMP, Index, UniqueConstraint
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from uuid import uuid4
 from datetime import datetime, timezone
-from sqlalchemy import TIMESTAMP
 from app.db.base import Base
 
 # 1) 피싱범
@@ -14,7 +13,7 @@ class PhishingOffender(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    profile: Mapped[dict] = mapped_column(JSON, default=dict)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)   # ← JSONB
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -22,33 +21,34 @@ class PhishingOffender(Base):
 class Victim(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    meta: Mapped[dict] = mapped_column(JSON, default=dict)
-    knowledge: Mapped[dict] = mapped_column(JSON, default=dict)
-    traits: Mapped[dict] = mapped_column(JSON, default=dict)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)       # ← JSONB
+    knowledge: Mapped[dict] = mapped_column(JSONB, default=dict)  # ← JSONB
+    traits: Mapped[dict] = mapped_column(JSONB, default=dict)     # ← JSONB
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-# 3) 관리자 케이스(간소화: 피싱여부 + 근거만)
+# 3) 관리자 케이스
 class AdminCase(Base):
     id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    scenario: Mapped[dict] = mapped_column(JSON, default=dict)
+    scenario: Mapped[dict] = mapped_column(JSONB, default=dict)   # ← JSONB
     phishing: Mapped[bool | None] = mapped_column()
     evidence: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(20), default="running")   # ✅ running/completed/aborted
-    defense_count: Mapped[int | None] = mapped_column(Integer, nullable=True)  # ✅ 방어 횟수
+    status: Mapped[str] = mapped_column(String(20), default="running")   # running/completed/aborted
+    defense_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
-    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)  # ✅ 완료 시각
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
-# 4) 대화 로그
+# 4) 대화 로그 (하이브리드: TEXT + JSONB)
 class ConversationLog(Base):
     id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     case_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("admincase.id"), index=True)
     offender_id: Mapped[int] = mapped_column(ForeignKey("phishingoffender.id"))
     victim_id: Mapped[int] = mapped_column(ForeignKey("victim.id"))
-    turn_index: Mapped[int] = mapped_column(Integer)   # 0..N
-    role: Mapped[str] = mapped_column(String(20))      # offender/victim
-    content: Mapped[str] = mapped_column(Text)
+    turn_index: Mapped[int] = mapped_column(Integer)                   # 정렬 키 유지
+    role: Mapped[str] = mapped_column(String(20))                      # offender/victim
+    content: Mapped[str] = mapped_column(Text)                         # 기존 유지(점진 전환)
     label: Mapped[str | None] = mapped_column(String(20))
+    payload: Mapped[dict | None] = mapped_column(JSONB, default=dict)  # ← 신설 JSONB
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     case = relationship("AdminCase")
@@ -56,10 +56,5 @@ class ConversationLog(Base):
     __table_args__ = (
         Index("ix_conv_case_turn", "case_id", "turn_index"),
         UniqueConstraint("case_id", "turn_index", name="uq_case_turn"),
+        # GIN 인덱스는 Alembic에서 추가 (모델에선 안 잡힘)
     )
-
-# # ✅ 정렬 인덱스 + 유니크 제약(중복 턴 방지)
-# Index("ix_conv_case_turn", ConversationLog.case_id, ConversationLog.turn_index)
-# UniqueConstraint(ConversationLog.case_id, ConversationLog.turn_index, name="uq_case_turn")
-
-

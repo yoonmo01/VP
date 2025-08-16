@@ -84,20 +84,29 @@ def main():
         if not offenders or not victims:
             raise RuntimeError("오프너/피해자 데이터가 부족합니다. seed를 먼저 넣어주세요.")
 
+        CYCLES = 5  # ← 사이클 횟수
+
         total = 0
         results = []
-        # 각 피싱범 시나리오를 모든 피해자에게 적용 → O×V
-        for off in offenders:
-            for vic in victims:
-                case_id, turns = run_one(db, off, vic, max_rounds=10)  # 테스트용: 10 라운드
-                total += 1
-                results.append({"case_id": case_id, "offender_id": off.id, "victim_id": vic.id, "turns": turns})
-                print(f"[{total}] offender={off.id} victim={vic.id} → case={case_id} turns={turns}")
 
-        # 요약 출력
+        for cycle in range(1, CYCLES + 1):
+            print(f"\n=== Cycle {cycle}/{CYCLES} 시작 ===")
+            for off in offenders:
+                for vic in victims:
+                    case_id, turns = run_one(db, off, vic, max_rounds=15)
+                    total += 1
+                    results.append({
+                        "cycle": cycle,
+                        "case_id": case_id,
+                        "offender_id": off.id,
+                        "victim_id": vic.id,
+                        "turns": turns
+                    })
+                    print(f"[{total}] cycle={cycle} offender={off.id} victim={vic.id} → case={case_id} turns={turns}")
+
         print("\n=== Batch summary ===")
-        print(f"총 케이스 수: {total} (예상 {len(offenders)} x {len(victims)} = {len(offenders)*len(victims)})")
-        print(json.dumps(results[:5], ensure_ascii=False, indent=2))  # 앞 5개 미리보기
+        print(f"총 케이스 수: {total} (예상 {len(offenders)} x {len(victims)} x {CYCLES} = {len(offenders)*len(victims)*CYCLES})")
+        print(json.dumps(results[:5], ensure_ascii=False, indent=2))
 
     finally:
         db.close()
