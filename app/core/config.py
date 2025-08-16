@@ -55,5 +55,10 @@ class Settings(BaseSettings):
     @property
     def sqlalchemy_url(self) -> str:
         return self.sync_dsn
+    
+    @property
+    def OPENAI_MODEL(self) -> str:
+        # 기존 코드가 settings.OPENAI_MODEL을 찾을 때 ADMIN_MODEL을 돌려줌
+        return self.ADMIN_MODEL
 
 settings = Settings()  # type: ignore
