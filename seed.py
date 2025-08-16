@@ -7,6 +7,13 @@ from app.db.base import Base
 from app.db.session import engine, SessionLocal
 from app.db import models as m
 
+from sqlalchemy import text
+print("ENGINE_URL =", engine.url)
+
+with engine.connect() as conn:
+    row = conn.execute(text("select current_database(), current_user")).fetchone()
+    print("DB CHECK:", row)
+
 BASE_DIR = Path(__file__).parent
 SEEDS_DIR = BASE_DIR / "seeds"
 

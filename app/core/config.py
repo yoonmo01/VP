@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import AnyHttpUrl
-from typing import List
+from typing import List, Optional
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -16,7 +16,10 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: List[AnyHttpUrl] = []
 
-    # DB (방법1 기준)
+    # 1) 있으면 이 값을 **최우선 사용**
+    DATABASE_URL: Optional[str] = None
+
+    # 2) 없으면 아래 값으로 DSN 조합
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "voicephish"
@@ -42,9 +45,15 @@ class Settings(BaseSettings):
 
     @property
     def sync_dsn(self) -> str:
+        if self.DATABASE_URL:           # ← .env에 있으면 그걸 사용
+            return self.DATABASE_URL
         return (
             f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
+        
+    @property
+    def sqlalchemy_url(self) -> str:
+        return self.sync_dsn
 
 settings = Settings()  # type: ignore

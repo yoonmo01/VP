@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 from typing import Any, Dict, List, Tuple
-
+from sqlalchemy import text, inspect  # ★ 추가
 from app.db.session import SessionLocal
 from app.db import models as m
 from app.services.simulation import run_two_bot_simulation
@@ -74,6 +74,15 @@ def run_one(db, offender: m.PhishingOffender, victim: m.Victim, max_rounds: int)
 def main():
     db = SessionLocal()
     try:
+        # --- 연결/데이터 자가진단 ---
+        row = db.execute(text("select current_database(), current_user")).fetchone()
+        print("DB CHECK:", row)  # ('testdb', 'test')가 떠야 정상
+        cnt_off = db.execute(text("select count(*) from phishingoffender")).scalar() if db.bind.dialect.has_table(db.bind.connect(), "phishingoffender") else 0
+        cnt_vic = db.execute(text("select count(*) from victim")).scalar() if db.bind.dialect.has_table(db.bind.connect(), "victim") else 0
+        print(f"TABLE COUNTS => phishingoffender={cnt_off}, victim={cnt_vic}")
+        # ----------------------------
+        
+        
         offenders: List[m.PhishingOffender] = (
             db.query(m.PhishingOffender).filter(m.PhishingOffender.is_active.is_(True)).order_by(m.PhishingOffender.id)
         ).all()
