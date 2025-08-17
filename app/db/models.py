@@ -15,6 +15,7 @@ class PhishingOffender(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     profile: Mapped[dict] = mapped_column(JSONB, default=dict)   # ← JSONB
+    source: Mapped[dict | None] = mapped_column(JSONB, default=dict)            # 사례 출처 JSON
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -27,6 +28,7 @@ class Victim(Base):
     knowledge: Mapped[dict] = mapped_column(JSONB, default=dict)  # ← JSONB
     traits: Mapped[dict] = mapped_column(JSONB, default=dict)     # ← JSONB
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    photo_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 # 3) 관리자 케이스
