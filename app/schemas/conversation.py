@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, AliasChoices
-from typing import Literal, Optional
+from typing import Literal, Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
 
@@ -13,8 +13,8 @@ class ConversationTurn(BaseModel):
 class ConversationRunRequest(BaseModel):
     offender_id: int
     victim_id: int
-    case_scenario: dict
-    max_rounds: int = 3  # 필요 시 범위 검증 추가 가능
+    case_scenario: Optional[Dict[str, Any]] = None
+    max_rounds: int = 15  # 필요 시 범위 검증 추가 가능
 
 class ConversationRunResult(BaseModel):
     case_id: UUID
@@ -40,3 +40,8 @@ class ConversationLogOut(BaseModel):
     )
 
     model_config = ConfigDict(populate_by_name=True)
+
+class ConversationRunLogs(BaseModel):
+    case_id: UUID
+    total_turns: int
+    logs: List[ConversationLogOut]   # ✅ 판단은 제외
