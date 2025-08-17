@@ -207,10 +207,12 @@ D) **지인/기관 사칭에 따른 실행**
 [출력 형식] (매우 엄격)
 - 오직 JSON 객체 1개만 출력(코드블록, 설명, 주석 금지)
 - 키는 정확히 2개: "phishing", "evidence"
+- 위 두 키 외의 어떤 키도 출력하지 말 것.
 - 키 순서는 ["phishing", "evidence"]
 - "phishing": true 또는 false
 - "evidence": 한 단락(2~4문장) 요약 + **핵심 발화 2~5개**를 turn_index와 함께 인용 (모두 피해자 발화)
-  - 인용 예: turn 07 "700만원 송금했어요", turn 10 "락커 24번에 넣었습니다", turn 05 "OTP 6자리 불러드릴게요"
+  - 인용 예: turn 7 "700만원 송금했어요", turn 10 "락커 24번에 넣었습니다", turn 5 "OTP 6자리 불러드릴게요"
+- 인용에서의 turn_index 표기는 항상 정수(1,2,3...)로 쓰고, 앞에 0을 붙이지 말 것(01, 03 금지).
 
 [참고 시나리오]
 시나리오: {scenario}
@@ -219,7 +221,7 @@ D) **지인/기관 사칭에 따른 실행**
 {dialog}
 
 [출력 예시]
-{{"phishing": true, "evidence": "피해자 발화 기준, turn 07에서 '700만원 송금했어요', turn 10에서 '락커 24번에 넣었습니다' 등 금전 이동 완료가 확인됨. 또한 turn 05에서 OTP 제공 발화가 나타남."}}
+{{"phishing": true, "evidence": "피해자 발화 기준, turn 7에서 '700만원 송금했어요', turn 10에서 '락커 24번에 넣었습니다' 등 금전 이동 완료가 확인됨. 또한 turn 5에서 OTP 제공 발화가 나타남."}}
 """.strip()
 
 
@@ -229,7 +231,7 @@ D) **지인/기관 사칭에 따른 실행**
 def _format_dialog_victim_only(db: Session, case_id: UUID) -> str:
     """
     DB의 대화 로그에서 '피해자' 발화만 판정용 평문으로 변환.
-    형식: 02 [피해자] ...내용...
+    형식: 2 [피해자] ...내용...
     """
     logs = (
         db.query(m.ConversationLog)
@@ -252,6 +254,11 @@ def _json_loads_lenient(s: str) -> dict[str, Any]:
     """모델이 앞뒤에 텍스트를 붙였을 경우에도 JSON 블록만 안전하게 파싱."""
     mobj = re.search(r"\{[\s\S]*\}", s)
     raw = mobj.group(0) if mobj else s
+    
+    # 예비 보정: "turn": 03 → "turn": 3 (혹시 등장할 경우 대비용)
+    # 다른 숫자 필드에도 안전하게 동작 (키 이름 제한하지 않음)
+    fixed = re.sub(r'(:\s*)0+(\d+)(\s*[,\}])', r': \2\3', raw)
+    
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
