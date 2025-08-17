@@ -10,6 +10,7 @@ from app.db.base import Base
 
 # 1) 피싱범
 class PhishingOffender(Base):
+    __tablename__ = "phishingoffender"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     type: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -19,6 +20,7 @@ class PhishingOffender(Base):
 
 # 2) 피해자
 class Victim(Base):
+    __tablename__ = "victim"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     meta: Mapped[dict] = mapped_column(JSONB, default=dict)       # ← JSONB
@@ -29,6 +31,7 @@ class Victim(Base):
 
 # 3) 관리자 케이스
 class AdminCase(Base):
+    __tablename__ = "admincase"
     id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     scenario: Mapped[dict] = mapped_column(JSONB, default=dict)   # ← JSONB
     phishing: Mapped[bool | None] = mapped_column()
@@ -40,6 +43,7 @@ class AdminCase(Base):
 
 # 4) 대화 로그 (하이브리드: TEXT + JSONB)
 class ConversationLog(Base):
+    __tablename__ = "conversationlog"
     id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     case_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("admincase.id"), index=True)
     offender_id: Mapped[int] = mapped_column(ForeignKey("phishingoffender.id"))

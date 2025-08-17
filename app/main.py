@@ -18,11 +18,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health.router, prefix=settings.API_PREFIX)
-app.include_router(offenders.router, prefix=settings.API_PREFIX)
-app.include_router(victims.router, prefix=settings.API_PREFIX)
-app.include_router(conversations.router, prefix=settings.API_PREFIX)
-app.include_router(admin_cases.router, prefix=settings.API_PREFIX)
+app.include_router(health,         prefix=settings.API_PREFIX)
+app.include_router(offenders, prefix=settings.API_PREFIX)
+app.include_router(victims,        prefix=settings.API_PREFIX)
+app.include_router(conversations,  prefix=settings.API_PREFIX)
+app.include_router(admin_cases,    prefix=settings.API_PREFIX)
 
 @app.get("/")
 async def root():
