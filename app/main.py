@@ -4,7 +4,7 @@ from app.core.config import settings
 from app.db.session import engine
 from app.db.base import Base
 
-from app.routers import health, offenders, victims, conversations, admin_cases  # ✅ checklists 제거
+from app.routers import health, offenders, victims, conversations, admin_cases, conversations_read  # ✅ checklists 제거
 
 Base.metadata.create_all(bind=engine)
 
@@ -23,6 +23,7 @@ app.include_router(offenders, prefix=settings.API_PREFIX)
 app.include_router(victims,        prefix=settings.API_PREFIX)
 app.include_router(conversations,  prefix=settings.API_PREFIX)
 app.include_router(admin_cases,    prefix=settings.API_PREFIX)
+app.include_router(conversations_read.router, prefix=settings.API_PREFIX)
 
 @app.get("/")
 async def root():
