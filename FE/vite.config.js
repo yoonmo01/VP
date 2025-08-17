@@ -1,7 +1,22 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+// FE/vite.config.js
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
-})
+  server: {
+    host: true,
+    port: 5173, // 프론트 고정
+    hmr: { protocol: "wss", clientPort: 443 }, // Replit HTTPS 환경
+    proxy: {
+      "^/api": {
+        // FE가 API 부를 땐 프록시로 내부 8000 사용
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+      },
+    },
+    allowedHosts: [".replit.dev", ".pike.replit.dev", ".repl.co"],
+  },
+});

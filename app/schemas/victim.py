@@ -1,3 +1,4 @@
+#app/schemas/victim.py
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
 
@@ -19,3 +20,8 @@ class VictimOut(BaseModel):
     photo_path: Optional[str] = None              # ✅ 출력에도 포함
 
     model_config = ConfigDict(from_attributes=True)
+
+
+
+
+
