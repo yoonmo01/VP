@@ -1,0 +1,21 @@
+# Web Framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# Data Models
+pydantic==2.8.2
+
+# Database
+psycopg2-binary==2.9.9
+
+# MCP SDK (Model Context Protocol)
+# 1.x 안정 버전 사용, 1.12.4 이상 <2 권장
+mcp>=1.12.4,<2
+
+# LLM Providers
+openai==1.40.0
+anthropic==0.34.2
+
+# Utils (선택적: JSON 처리, 비동기 요청 등에 유용)
+python-dotenv==1.0.1   # .env 파일 로드용
+httpx==0.27.0          # 비동기 HTTP 클라이언트 (FastAPI 테스트나 외부 호출에 유용)
