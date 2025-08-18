@@ -581,7 +581,7 @@ const SimulatorPage = ({
                 </div>
             </div>
 
-            {sessionResult && (
+            {sessionResult && progress >= 100 && (
                 <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50">
                     <div
                         className="px-8 py-4 rounded-xl"
