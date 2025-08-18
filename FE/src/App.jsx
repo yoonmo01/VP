@@ -418,7 +418,7 @@ const App = () => {
       } catch (e) {
         console.warn("tail 폴링 실패:", e);
       }
-    }, 2400);
+    }, 3000);
   };
 
   // job 폴링 시작
