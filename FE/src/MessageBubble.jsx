@@ -3,6 +3,7 @@ const MessageBubble = ({ message, selectedCharacter, COLORS }) => {
     const isScammer = message.sender === "offender";
     const isSystem = message.type === "system";
     const isAnalysis = message.type === "analysis";
+    const isSpinner = isSystem && message.content.includes("🔄");
 
     return (
         <div className={`flex ${isVictim ? "justify-end" : "justify-start"}`}>
@@ -10,6 +11,7 @@ const MessageBubble = ({ message, selectedCharacter, COLORS }) => {
                 className={[
                     "max-w-md lg:max-w-lg px-5 py-3 rounded-2xl border",
                     isSystem ? "mx-auto text-center" : "",
+                    isSpinner ? "w-80 h-32 flex flex-col items-center justify-center" : "",
                 ].join(" ")}
                 style={{
                     backgroundColor: isSystem
@@ -33,6 +35,17 @@ const MessageBubble = ({ message, selectedCharacter, COLORS }) => {
                     }`,
                 }}
             >
+                {/* 스피너 메시지일 때 바 애니메이션 표시 */}
+                {isSpinner && (
+                    <div className="flex space-x-1 mb-4">
+                        <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0s'}}></div>
+                        <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.1s'}}></div>
+                        <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.2s'}}></div>
+                        <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.3s'}}></div>
+                        <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.4s'}}></div>
+                    </div>
+                )}
+
                 {isScammer && (
                     <div
                         className="flex items-center mb-2"
@@ -61,7 +74,7 @@ const MessageBubble = ({ message, selectedCharacter, COLORS }) => {
                     </div>
                 )}
                 <p className="whitespace-pre-line text-base leading-relaxed">
-                    {message.content}
+                    {isSpinner ? message.content.replace("🔄 ", "") : message.content}
                 </p>
                 <div
                     className="text-xs mt-2 opacity-70"

@@ -1,10 +1,11 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { Play, Clock, X, Check, AlertTriangle } from "lucide-react";
 import HudBar from "./HudBar";
 import Badge from "./Badge";
 import SelectedCard from "./SelectedCard";
 import Chip from "./Chip";
 import MessageBubble from "./MessageBubble";
+import SpinnerMessage from "./SpinnerMessage";
 
 // Victims 이미지 동적 import 함수
 const getVictimImage = (photoPath) => {
@@ -47,18 +48,6 @@ const SimulatorPage = ({
     const needScenario = !selectedScenario;
     const needCharacter = !selectedCharacter;
     const [selectedTag, setSelectedTag] = useState(null);
-    const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
-
-    // 3초마다 메시지 변경
-    useEffect(() => {
-        if (simulationState === "PREPARE" || simulationState === "RUNNING") {
-            const interval = setInterval(() => {
-                setCurrentMessageIndex(prev => (prev + 1) % 10);
-            }, 3000);
-            
-            return () => clearInterval(interval);
-        }
-    }, [simulationState]);
 
     const filteredScenarios = useMemo(() => {
         if (!selectedTag) return scenarios;
@@ -208,37 +197,9 @@ const SimulatorPage = ({
                             ref={scrollContainerRef}
                             className="h-full overflow-y-auto space-y-6"
                         >
-                            {/* 시뮬레이션 준비 중 스피너 (실제 대화 로그가 없을 때만 표시) */}
-                            {(simulationState === "PREPARE" || simulationState === "RUNNING") && 
-                             !messages.some(m => m.type === "chat") && (
-                                <div className="flex justify-center py-8">
-                                    <div className="bg-[#2B2D31] rounded-lg shadow-lg p-8 flex flex-col items-center justify-center border w-80 h-32" style={{ borderColor: COLORS.border }}>
-                                        <div className="flex space-x-1">
-                                            <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0s'}}></div>
-                                            <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.1s'}}></div>
-                                            <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.2s'}}></div>
-                                            <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.3s'}}></div>
-                                            <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.4s'}}></div>
-                                        </div>
-                                        <p className="mt-4 text-sm text-center" style={{ color: COLORS.sub }}>
-                                            {(() => {
-                                                const loadingMessages = [
-                                                    "피싱범이 전략 회의 중...",
-                                                    "피해자가 전화를 받는 중...",
-                                                    "AI가 대화 시나리오를 구상 중...",
-                                                    "보이스피싱 시뮬레이션 준비 중...",
-                                                    "피싱범이 목표를 선정 중...",
-                                                    "피해자가 취약점을 노출 중...",
-                                                    "대화 로그를 수집 중...",
-                                                    "피싱 기법을 분석 중...",
-                                                    "시뮬레이션 환경을 구축 중...",
-                                                    "AI 모델이 학습 데이터를 분석 중..."
-                                                ];
-                                                return loadingMessages[currentMessageIndex];
-                                            })()}
-                                        </p>
-                                    </div>
-                                </div>
+                            {/* 스피너 메시지 (로그가 없을 때만 표시) */}
+                            {!messages.some(m => m.type === "chat") && (
+                                <SpinnerMessage simulationState={simulationState} COLORS={COLORS} />
                             )}
 
                             {/* ✅ CHANGED: message를 normalize 해서 MessageBubble로 전달 */}
