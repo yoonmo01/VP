@@ -30,6 +30,7 @@ const SimulatorPage = ({
     const needScenario = !selectedScenario;
     const needCharacter = !selectedCharacter;
     const [selectedTag, setSelectedTag] = useState(null);
+
     const filteredScenarios = useMemo(() => {
         if (!selectedTag) return scenarios;
         return scenarios.filter(
@@ -38,6 +39,57 @@ const SimulatorPage = ({
                 (Array.isArray(s.tags) && s.tags.includes(selectedTag)),
         );
     }, [selectedTag, scenarios]);
+
+    // ✅ NEW: 메시지 → 렌더 정보 정규화 (라벨/사이드/타임스탬프 보정)
+    const normalizeMessage = (m) => {
+        // 시스템/분석 메시지는 그대로
+        if (m?.type === "system" || m?.type === "analysis") {
+            return {
+                ...m,
+                _kind: m.type,
+                label: m.type === "system" ? "시스템" : "분석",
+                side: "center",
+                timestamp: m.timestamp,
+            };
+        }
+
+        const role = (m?.sender || m?.role || "").toLowerCase(); // "offender"|"victim"
+        const offenderLabel =
+            m?.offender_name ||
+            (selectedScenario ? `피싱범${selectedScenario.id}` : "피싱범");
+        const victimLabel =
+            m?.victim_name ||
+            (selectedCharacter ? `피해자${selectedCharacter.id}` : "피해자");
+
+        const label =
+            m?.senderLabel ??
+            m?.senderName ??
+            (role === "offender" ? offenderLabel : role === "victim" ? victimLabel : "상대");
+
+        const side =
+            m?.side ??
+            (role === "offender" ? "left" : role === "victim" ? "right" : "left");
+
+        // created_kst를 문자열로 받는 케이스 보정
+        const ts =
+            typeof m?.timestamp === "string"
+                ? m.timestamp
+                : typeof m?.created_kst === "string"
+                ? new Date(m.created_kst).toLocaleTimeString()
+                : m?.timestamp ?? null;
+
+        return {
+            ...m,
+            _kind: "chat",
+            role,
+            label,
+            side,
+            timestamp: ts,
+        };
+    };
+
+    // ✅ NEW: 시작 버튼 보호 — 실행 중/준비 중엔 비활성화
+    const startDisabled = simulationState === "PREPARE" || simulationState === "RUNNING";
 
     return (
         <div
@@ -87,9 +139,7 @@ const SimulatorPage = ({
                                     onClick={() => {
                                         setSelectedScenario(null);
                                         setSelectedTag?.(null);
-                                        addSystem(
-                                            "시나리오를 다시 선택하세요.",
-                                        );
+                                        addSystem("시나리오를 다시 선택하세요.");
                                     }}
                                     className="px-3 py-2 rounded-md text-sm font-medium border hover:opacity-90 transition"
                                     style={{
@@ -106,9 +156,7 @@ const SimulatorPage = ({
                                     <button
                                         onClick={() => {
                                             setSelectedCharacter(null);
-                                            addSystem(
-                                                "캐릭터를 다시 선택하세요.",
-                                            );
+                                            addSystem("캐릭터를 다시 선택하세요.");
                                         }}
                                         className="px-3 py-2 rounded-md text-sm font-medium border hover:opacity-90 transition"
                                         style={{
@@ -131,14 +179,23 @@ const SimulatorPage = ({
                             ref={scrollContainerRef}
                             className="h-full overflow-y-auto space-y-6"
                         >
-                            {messages.map((message, index) => (
-                                <MessageBubble
-                                    key={index}
-                                    message={message}
-                                    selectedCharacter={selectedCharacter}
-                                    COLORS={COLORS}
-                                />
-                            ))}
+                            {/* ✅ CHANGED: message를 normalize 해서 MessageBubble로 전달 */}
+                            {messages.map((m, index) => {
+                                const nm = normalizeMessage(m);
+                                return (
+                                    <MessageBubble
+                                        key={index}
+                                        // 기존 props
+                                        message={nm}
+                                        selectedCharacter={selectedCharacter}
+                                        COLORS={COLORS}
+                                        // ✅ NEW: 명시적 전달 (MessageBubble이 이 필드들을 쓰도록)
+                                        label={nm.label}
+                                        side={nm.side}
+                                        role={nm.role}
+                                    />
+                                );
+                            })}
 
                             {needScenario && (
                                 <div className="flex justify-start">
@@ -179,41 +236,32 @@ const SimulatorPage = ({
                                                         setSelectedScenario(s);
 
                                                         try {
-                                                            // 시나리오의 type을 백엔드로 보내 offender 조회
-                                                            const res =
-                                                                await fetch(
-                                                                    `/api/offenders/by-type/${encodeURIComponent(s.type)}`,
-                                                                );
+                                                            const res = await fetch(
+                                                                `/api/offenders/by-type/${encodeURIComponent(
+                                                                    s.type,
+                                                                )}`,
+                                                            );
                                                             if (!res.ok)
-                                                                throw new Error(
-                                                                    "서버 오류",
-                                                                );
-                                                            const offenders =
-                                                                await res.json();
+                                                                throw new Error("서버 오류");
+                                                            const offenders = await res.json();
 
-                                                            console.log(
-                                                                "조회된 offenders:",
-                                                                offenders,
-                                                            );
+                                                            console.log("조회된 offenders:", offenders);
 
-                                                            // 메시지 시스템에도 알림
                                                             addSystem(
-                                                                `${s.type} 유형 공격자 ${offenders.length}명 조회됨 (id: ${offenders.map((o) => o.id).join(",")})`,
+                                                                `${s.type} 유형 공격자 ${offenders.length}명 조회됨 (id: ${offenders
+                                                                    .map((o) => o.id)
+                                                                    .join(",")})`,
                                                             );
 
-                                                            // 👉 characters를 offender로 교체해서 카드에 띄우고 싶으면
-                                                            // props로 setCharacters를 받아와서 여기서 setCharacters(offenders) 호출
+                                                            // 필요 시 setCharacters(offenders) 로 교체 가능
                                                         } catch (err) {
                                                             console.error(err);
-                                                            addSystem(
-                                                                "공격자 조회 실패",
-                                                            );
+                                                            addSystem("공격자 조회 실패");
                                                         }
                                                     }}
                                                     className="w-full text-left rounded-lg p-4 hover:opacity-90"
                                                     style={{
-                                                        backgroundColor:
-                                                            "#313338",
+                                                        backgroundColor: "#313338",
                                                         border: `1px solid ${COLORS.border}`,
                                                         color: COLORS.text,
                                                     }}
@@ -231,9 +279,7 @@ const SimulatorPage = ({
                                                     </div>
                                                     <p
                                                         className="text-base leading-relaxed"
-                                                        style={{
-                                                            color: COLORS.sub,
-                                                        }}
+                                                        style={{ color: COLORS.sub }}
                                                     >
                                                         {s.profile.purpose}
                                                     </p>
@@ -279,10 +325,7 @@ const SimulatorPage = ({
                                                 ) : (
                                                     <div
                                                         className="w-full h-44 flex items-center justify-center text-6xl"
-                                                        style={{
-                                                            backgroundColor:
-                                                                "#2A2C31",
-                                                        }}
+                                                        style={{ backgroundColor: "#2A2C31" }}
                                                     >
                                                         {c.avatar ?? "👤"}
                                                     </div>
@@ -296,8 +339,7 @@ const SimulatorPage = ({
                                                             className="text-xs px-2 py-1 rounded-md"
                                                             style={{
                                                                 color: COLORS.blurple,
-                                                                backgroundColor:
-                                                                    "rgba(88,101,242,.12)",
+                                                                backgroundColor: "rgba(88,101,242,.12)",
                                                                 border: "1px solid rgba(88,101,242,.35)",
                                                             }}
                                                         >
@@ -308,9 +350,7 @@ const SimulatorPage = ({
                                                     {/* 기본 정보 - 한 줄에 하나씩 */}
                                                     <div
                                                         className="space-y-2 text-sm"
-                                                        style={{
-                                                            color: COLORS.sub,
-                                                        }}
+                                                        style={{ color: COLORS.sub }}
                                                     >
                                                         <div className="flex justify-between items-center">
                                                             <span className="text-[12px] opacity-70">
@@ -341,10 +381,7 @@ const SimulatorPage = ({
                                                                 학력
                                                             </span>
                                                             <span className="font-medium text-[#DCDDDE] truncate ml-2">
-                                                                {
-                                                                    c.meta
-                                                                        .education
-                                                                }
+                                                                {c.meta.education}
                                                             </span>
                                                         </div>
                                                     </div>
@@ -353,38 +390,22 @@ const SimulatorPage = ({
                                                     <div>
                                                         <span
                                                             className="block text-[12px] opacity-70 mb-2"
-                                                            style={{
-                                                                color: COLORS.sub,
-                                                            }}
+                                                            style={{ color: COLORS.sub }}
                                                         >
                                                             지식
                                                         </span>
                                                         <div className="space-y-1">
                                                             {Array.isArray(
-                                                                c?.knowledge
-                                                                    ?.comparative_notes,
-                                                            ) &&
-                                                            c.knowledge
-                                                                .comparative_notes
-                                                                .length > 0 ? (
-                                                                c.knowledge.comparative_notes.map(
-                                                                    (
-                                                                        note,
-                                                                        idx,
-                                                                    ) => (
-                                                                        <div
-                                                                            key={
-                                                                                idx
-                                                                            }
-                                                                            className="text-sm font-medium text-[#DCDDDE] leading-relaxed"
-                                                                        >
-                                                                            •{" "}
-                                                                            {
-                                                                                note
-                                                                            }
-                                                                        </div>
-                                                                    ),
-                                                                )
+                                                                c?.knowledge?.comparative_notes,
+                                                            ) && c.knowledge.comparative_notes.length > 0 ? (
+                                                                c.knowledge.comparative_notes.map((note, idx) => (
+                                                                    <div
+                                                                        key={idx}
+                                                                        className="text-sm font-medium text-[#DCDDDE] leading-relaxed"
+                                                                    >
+                                                                        • {note}
+                                                                    </div>
+                                                                ))
                                                             ) : (
                                                                 <div className="text-sm text-[#B5BAC1]">
                                                                     비고 없음
@@ -397,68 +418,39 @@ const SimulatorPage = ({
                                                     <div>
                                                         <span
                                                             className="block text-[12px] opacity-70 mb-2"
-                                                            style={{
-                                                                color: COLORS.sub,
-                                                            }}
+                                                            style={{ color: COLORS.sub }}
                                                         >
                                                             성격
                                                         </span>
                                                         <div className="space-y-1">
                                                             {c?.traits?.ocean &&
-                                                            typeof c.traits
-                                                                .ocean ===
-                                                                "object" ? (
-                                                                Object.entries(
-                                                                    c.traits
-                                                                        .ocean,
-                                                                ).map(
-                                                                    ([
-                                                                        key,
-                                                                        val,
-                                                                    ]) => {
-                                                                        const labelMap =
-                                                                            {
-                                                                                openness:
-                                                                                    "개방성",
-                                                                                neuroticism:
-                                                                                    "신경성",
-                                                                                extraversion:
-                                                                                    "외향성",
-                                                                                agreeableness:
-                                                                                    "친화성",
-                                                                                conscientiousness:
-                                                                                    "성실성",
-                                                                            };
-                                                                        const label =
-                                                                            labelMap[
-                                                                                key
-                                                                            ] ??
-                                                                            key;
-                                                                        return (
-                                                                            <div
-                                                                                key={
-                                                                                    key
-                                                                                }
-                                                                                className="flex justify-between items-center"
-                                                                            >
-                                                                                <span className="text-[12px] opacity-70">
-                                                                                    {
-                                                                                        label
-                                                                                    }
-                                                                                </span>
-                                                                                <span className="text-sm font-medium text-[#DCDDDE]">
-                                                                                    {
-                                                                                        val
-                                                                                    }
-                                                                                </span>
-                                                                            </div>
-                                                                        );
-                                                                    },
-                                                                )
+                                                            typeof c.traits.ocean === "object" ? (
+                                                                Object.entries(c.traits.ocean).map(([key, val]) => {
+                                                                    const labelMap = {
+                                                                        openness: "개방성",
+                                                                        neuroticism: "신경성",
+                                                                        extraversion: "외향성",
+                                                                        agreeableness: "친화성",
+                                                                        conscientiousness: "성실성",
+                                                                    };
+                                                                    const label = labelMap[key] ?? key;
+                                                                    return (
+                                                                        <div
+                                                                            key={key}
+                                                                            className="flex justify-between items-center"
+                                                                        >
+                                                                            <span className="text-[12px] opacity-70">
+                                                                                {label}
+                                                                            </span>
+                                                                            <span className="text-sm font-medium text-[#DCDDDE]">
+                                                                                {val}
+                                                                            </span>
+                                                                        </div>
+                                                                    );
+                                                                })
                                                             ) : (
                                                                 <div className="text-sm text-[#B5BAC1]">
-                                                                    성격 정보
-                                                                    없음
+                                                                    성격 정보 없음
                                                                 </div>
                                                             )}
                                                         </div>
@@ -508,18 +500,17 @@ const SimulatorPage = ({
                                     <div className="flex justify-center">
                                         <button
                                             onClick={startSimulation}
-                                            className="px-8 py-3 rounded-lg font-semibold text-lg"
+                                            disabled={startDisabled} // ✅ NEW: 실행 중엔 비활성화
+                                            className={`px-8 py-3 rounded-lg font-semibold text-lg ${
+                                                startDisabled ? "opacity-60 cursor-not-allowed" : ""
+                                            }`}
                                             style={{
                                                 backgroundColor: COLORS.blurple,
                                                 color: COLORS.white,
-                                                boxShadow:
-                                                    "0 10px 24px rgba(88,101,242,.35)",
+                                                boxShadow: "0 10px 24px rgba(88,101,242,.35)",
                                             }}
                                         >
-                                            <Play
-                                                className="inline mr-3"
-                                                size={20}
-                                            />
+                                            <Play className="inline mr-3" size={20} />
                                             시뮬레이션 시작
                                         </button>
                                     </div>
@@ -536,30 +527,18 @@ const SimulatorPage = ({
                     >
                         <div className="flex items-center gap-4">
                             <Clock size={18} color={COLORS.sub} />
-                            <span
-                                className="text-base font-medium"
-                                style={{ color: COLORS.sub }}
-                            >
+                            <span className="text-base font-medium" style={{ color: COLORS.sub }}>
                                 진행률: {Math.round(progress)}%
                             </span>
-                            <div
-                                className="w-48 h-3 rounded-full overflow-hidden"
-                                style={{ backgroundColor: "#313338" }}
-                            >
+                            <div className="w-48 h-3 rounded-full overflow-hidden" style={{ backgroundColor: "#313338" }}>
                                 <div
                                     className="h-3 rounded-full transition-all duration-300"
-                                    style={{
-                                        width: `${progress}%`,
-                                        backgroundColor: COLORS.blurple,
-                                    }}
+                                    style={{ width: `${progress}%`, backgroundColor: COLORS.blurple }}
                                 />
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
-                            <span
-                                className="text-base font-medium"
-                                style={{ color: COLORS.sub }}
-                            >
+                            <span className="text-base font-medium" style={{ color: COLORS.sub }}>
                                 상태: {simulationState}
                             </span>
                             {simulationState === "FINISH" && (
@@ -590,33 +569,23 @@ const SimulatorPage = ({
                         <div className="flex items-center gap-5">
                             <div className="flex items-center gap-3">
                                 {sessionResult.isPhishing ? (
-                                    <AlertTriangle
-                                        size={24}
-                                        color={COLORS.warn}
-                                    />
+                                    <AlertTriangle size={24} color={COLORS.warn} />
                                 ) : (
                                     <Check size={24} color={COLORS.success} />
                                 )}
                                 <span
                                     className="font-semibold text-lg"
                                     style={{
-                                        color: sessionResult.isPhishing
-                                            ? COLORS.warn
-                                            : COLORS.success,
+                                        color: sessionResult.isPhishing ? COLORS.warn : COLORS.success,
                                     }}
                                 >
-                                    {sessionResult.isPhishing
-                                        ? "피싱 감지"
-                                        : "정상 대화"}
+                                    {sessionResult.isPhishing ? "피싱 감지" : "정상 대화"}
                                 </span>
                             </div>
                             <button
                                 onClick={() => setCurrentPage("report")}
                                 className="px-6 py-2 rounded-md text-base font-medium"
-                                style={{
-                                    backgroundColor: COLORS.blurple,
-                                    color: COLORS.white,
-                                }}
+                                style={{ backgroundColor: COLORS.blurple, color: COLORS.white }}
                             >
                                 리포트 보기
                             </button>
