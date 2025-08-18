@@ -34,6 +34,7 @@ const ReportPage = ({
   selectedScenario,
   selectedCharacter,
   currentCaseId, // ★ App에서 전달
+  victimImageUrl, // ✅ 피해자 이미지 URL 추가
 }) => {
   // ---------- admin-case 실시간 조회 ----------
   const [adminCase, setAdminCase] = useState(null);
@@ -217,12 +218,20 @@ const ReportPage = ({
 
                 <div className="space-y-5">
                   <div className="flex justify-center">
-                    <div
-                      className="w-24 h-24 rounded-full flex items-center justify-center"
-                      style={{ backgroundColor: COLORS.border }}
-                    >
-                      <User size={48} color={COLORS.text} />
-                    </div>
+                    {victimImageUrl ? (
+                      <img
+                        src={victimImageUrl}
+                        alt={victim.name}
+                        className="w-24 h-24 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div
+                        className="w-24 h-24 rounded-full flex items-center justify-center"
+                        style={{ backgroundColor: COLORS.border }}
+                      >
+                        <User size={48} color={COLORS.text} />
+                      </div>
+                    )}
                   </div>
 
                   <div className="text-center">
