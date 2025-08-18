@@ -1,4 +1,5 @@
 import { Shield } from "lucide-react";
+import AIDisclaimerScroll from "./AIDisclaimerScroll";
 
 const HudBar = ({ COLORS }) => (
     <div
@@ -28,6 +29,7 @@ const HudBar = ({ COLORS }) => (
             </span>
         </div>
         <div className="flex items-center gap-2">
+            <AIDisclaimerScroll COLORS={COLORS} />
             <Shield size={20} color={COLORS.sub} />
         </div>
     </div>
