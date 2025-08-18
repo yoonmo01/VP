@@ -53,7 +53,13 @@ const MessageBubble = ({ message, selectedCharacter, victimImageUrl, COLORS }) =
                         className="flex items-center mb-2"
                         style={{ color: COLORS.warn }}
                     >
-                        <span className="mr-2 text-lg">🎭</span>
+                        <span className="mr-2">
+                            <img
+                                src={new URL('./assets/offender_profile.png', import.meta.url).href}
+                                alt="피싱범"
+                                className="w-8 h-8 rounded-full object-cover"
+                            />
+                        </span>
                         <span
                             className="text-sm font-medium"
                             style={{ color: COLORS.sub }}
