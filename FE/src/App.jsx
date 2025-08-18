@@ -517,7 +517,7 @@ const startJobPolling = (jobId) => {
         return;
       }
 
-      addSystem("시뮬레이션 실행 중... (실시간 로그 수집)");
+      addSystem("시뮬레이션 시작 (실시간 로그 수집)");
       startJobPolling(kick.job_id);
     } catch (err) {
       console.error("시뮬레이션 실행 실패:", err);
