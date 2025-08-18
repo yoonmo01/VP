@@ -33,7 +33,7 @@ const ReportPage = ({
   defaultCaseData,
   selectedScenario,
   selectedCharacter,
-  currentCaseId,            // ★ NEW: App에서 전달
+  currentCaseId, // ★ App에서 전달
 }) => {
   // ---------- admin-case 실시간 조회 ----------
   const [adminCase, setAdminCase] = useState(null);
@@ -47,7 +47,6 @@ const ReportPage = ({
       setAdminCaseLoading(true);
       setAdminCaseError(null);
       try {
-        // 프론트-백 같은 오리진이면 상대경로로 충분함
         const data = await fetchWithTimeout(
           `/api/admin-cases/${encodeURIComponent(currentCaseId)}`,
           { timeout: 15000 }
@@ -61,7 +60,9 @@ const ReportPage = ({
         if (mounted) setAdminCaseLoading(false);
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [currentCaseId]);
 
   // ---------- 표시값(우선순위: adminCase -> defaultCaseData -> sessionResult) ----------
@@ -112,6 +113,16 @@ const ReportPage = ({
           job: sessionResult.victimJob ?? "-",
         },
         traits: { ocean: undefined, list: sessionResult.victimTraits ?? [] },
+        // ✅ 지식(비교 메모) – 다양한 키 폴백 처리
+        knowledge: {
+          comparative_notes: Array.isArray(sessionResult?.victimKnowledge)
+            ? sessionResult.victimKnowledge
+            : Array.isArray(sessionResult?.victimComparativeNotes)
+            ? sessionResult.victimComparativeNotes
+            : Array.isArray(sessionResult?.knowledge?.comparative_notes)
+            ? sessionResult.knowledge.comparative_notes
+            : [],
+        },
       }
     : null;
 
@@ -121,6 +132,7 @@ const ReportPage = ({
       name: "알 수 없음",
       meta: { age: "-", gender: "-", address: "-", education: "-", job: "-" },
       traits: { ocean: undefined, list: [] },
+      knowledge: { comparative_notes: [] }, // ✅ 기본값
     };
 
   const oceanLabelMap = {
@@ -145,7 +157,9 @@ const ReportPage = ({
 
   const phishingTypeText =
     selectedScenario?.type ??
-    (Array.isArray(scenarios) ? scenarios[0]?.type ?? "피싱 유형" : "피싱 유형");
+    (Array.isArray(scenarios)
+      ? scenarios[0]?.type ?? "피싱 유형"
+      : "피싱 유형");
 
   return (
     <div className="min-h-screen bg-[#1E1F22] text-[#DCDDDE]">
@@ -224,6 +238,7 @@ const ReportPage = ({
                     </div>
                   </div>
 
+                  {/* 성격 정보 (OCEAN) */}
                   <div>
                     <h3 className="font-semibold text-lg mb-3">
                       성격 특성 (OCEAN)
@@ -247,9 +262,10 @@ const ReportPage = ({
                       )}
                     </div>
 
-                    <div className="flex flex-wrap gap-3">
-                      {traitList.length > 0 ? (
-                        traitList.map((t, i) => (
+                    {/* ▶ 추가 성격 특성: 비어있으면 아예 렌더하지 않음 */}
+                    {traitList?.length > 0 && (
+                      <div className="flex flex-wrap gap-3">
+                        {traitList.map((t, i) => (
                           <span
                             key={i}
                             className="px-4 py-2 rounded-full text-sm font-medium"
@@ -257,11 +273,29 @@ const ReportPage = ({
                           >
                             {t}
                           </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ✅ 지식 정보 */}
+                  <div className="mt-6">
+                    <h3 className="font-semibold text-lg mb-3">지식</h3>
+                    <div className="space-y-1">
+                      {Array.isArray(victim?.knowledge?.comparative_notes) &&
+                      victim.knowledge.comparative_notes.length > 0 ? (
+                        victim.knowledge.comparative_notes.map((note, idx) => (
+                          <div
+                            key={idx}
+                            className="text-sm font-medium text-[#DCDDDE] leading-relaxed"
+                          >
+                            • {note}
+                          </div>
                         ))
                       ) : (
-                        <span className="text-sm text-[#B5BAC1]">
-                          추가 성격 특성 없음
-                        </span>
+                        <div className="text-sm text-[#B5BAC1]">
+                          비고 없음
+                        </div>
                       )}
                     </div>
                   </div>
@@ -364,7 +398,9 @@ const ReportPage = ({
                   {(() => {
                     const src =
                       selectedScenario?.source ??
-                      (Array.isArray(scenarios) ? scenarios[0]?.source : null) ??
+                      (Array.isArray(scenarios)
+                        ? scenarios[0]?.source
+                        : null) ??
                       defaultCaseData?.case?.source ??
                       null;
 
