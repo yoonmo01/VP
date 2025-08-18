@@ -1,4 +1,6 @@
-const MessageBubble = ({ message, selectedCharacter, COLORS }) => {
+import { useState, useEffect } from "react";
+
+const MessageBubble = ({ message, selectedCharacter, victimImageUrl, COLORS }) => {
     const isVictim = message.sender === "victim";
     const isScammer = message.sender === "offender";
     const isSystem = message.type === "system";
@@ -63,7 +65,15 @@ const MessageBubble = ({ message, selectedCharacter, COLORS }) => {
                 {isVictim && selectedCharacter && (
                     <div className="flex items-center mb-2">
                         <span className="mr-2 text-lg">
-                            👤{selectedCharacter.avatar}
+                            {victimImageUrl ? (
+                                <img 
+                                    src={victimImageUrl} 
+                                    alt={selectedCharacter.name}
+                                    className="w-8 h-8 rounded-full object-cover"
+                                />
+                            ) : (
+                                `👤${selectedCharacter.avatar || ''}`
+                            )}
                         </span>
                         <span
                             className="text-sm font-medium"

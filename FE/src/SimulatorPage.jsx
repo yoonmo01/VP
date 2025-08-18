@@ -205,12 +205,15 @@ const SimulatorPage = ({
                             {/* ✅ CHANGED: message를 normalize 해서 MessageBubble로 전달 */}
                             {messages.map((m, index) => {
                                 const nm = normalizeMessage(m);
+                                const victimImageUrl = selectedCharacter ? getVictimImage(selectedCharacter.photo_path) : null;
+                                
                                 return (
                                     <MessageBubble
                                         key={index}
                                         // 기존 props
                                         message={nm}
                                         selectedCharacter={selectedCharacter}
+                                        victimImageUrl={victimImageUrl}
                                         COLORS={COLORS}
                                         // ✅ NEW: 명시적 전달 (MessageBubble이 이 필드들을 쓰도록)
                                         label={nm.label}
