@@ -1,5 +1,6 @@
-import { useState, useMemo } from "react";
-import { Play, Clock, X, Check, AlertTriangle } from "lucide-react";
+// src/SimulatorPage.jsx
+import { useState, useMemo, useEffect, useRef } from "react";
+import { Play, Clock, Check, AlertTriangle } from "lucide-react";
 import HudBar from "./HudBar";
 import Badge from "./Badge";
 import SelectedCard from "./SelectedCard";
@@ -7,22 +8,23 @@ import Chip from "./Chip";
 import MessageBubble from "./MessageBubble";
 import SpinnerMessage from "./SpinnerMessage";
 
-// Victims 이미지 동적 import 함수
 const getVictimImage = (photoPath) => {
     if (!photoPath) return null;
     try {
-        // "/static/images/victims/2.png" -> "2.png" 추출
         const fileName = photoPath.split("/").pop();
-        if (fileName) {
-            // 동적 import로 assets/victims 폴더의 이미지 로드
+        if (fileName)
             return new URL(`./assets/victims/${fileName}`, import.meta.url)
                 .href;
-        }
     } catch (error) {
         console.warn("이미지 로드 실패:", error);
     }
     return null;
 };
+
+const countChatMessages = (messages = []) =>
+    Array.isArray(messages)
+        ? messages.filter((m) => (m?.type ?? m?._kind) === "chat").length
+        : 0;
 
 const SimulatorPage = ({
     COLORS,
@@ -35,15 +37,24 @@ const SimulatorPage = ({
     messages,
     sessionResult,
     progress,
+    setProgress, // 반드시 App에서 전달하세요
     resetToSelection,
     startSimulation,
+    startAgentRun,
+    declineAgentRun,
     scenarios,
     characters,
-    agentModalVisible,
-    setAgentModalVisible,
-    setAgentUsed,
     scrollContainerRef,
     addSystem,
+    pendingAgentDecision,
+    showReportPrompt,
+    setShowReportPrompt,
+    hasInitialRun,
+    hasAgentRun,
+    agentRunning,
+    victimImageUrl,
+    agentVerbose, // ← 추가
+    setAgentVerbose, // ← 추가
 }) => {
     const needScenario = !selectedScenario;
     const needCharacter = !selectedCharacter;
@@ -58,9 +69,7 @@ const SimulatorPage = ({
         );
     }, [selectedTag, scenarios]);
 
-    // ✅ NEW: 메시지 → 렌더 정보 정규화 (라벨/사이드/타임스탬프 보정)
     const normalizeMessage = (m) => {
-        // 시스템/분석 메시지는 그대로
         if (m?.type === "system" || m?.type === "analysis") {
             return {
                 ...m,
@@ -71,7 +80,7 @@ const SimulatorPage = ({
             };
         }
 
-        const role = (m?.sender || m?.role || "").toLowerCase(); // "offender"|"victim"
+        const role = (m?.sender || m?.role || "").toLowerCase();
         const offenderLabel =
             m?.offender_name ||
             (selectedScenario ? `피싱범${selectedScenario.id}` : "피싱범");
@@ -96,7 +105,6 @@ const SimulatorPage = ({
                   ? "right"
                   : "left");
 
-        // created_kst를 문자열로 받는 케이스 보정
         const ts =
             typeof m?.timestamp === "string"
                 ? m.timestamp
@@ -114,9 +122,74 @@ const SimulatorPage = ({
         };
     };
 
-    // ✅ NEW: 시작 버튼 보호 — 실행 중/준비 중엔 비활성화
+    // 버튼 비활성 조건
     const startDisabled =
-        simulationState === "PREPARE" || simulationState === "RUNNING";
+        simulationState === "PREPARE" ||
+        simulationState === "RUNNING" ||
+        pendingAgentDecision ||
+        hasInitialRun;
+
+    // --- 핵심: 진행률 재계산을 위한 ref/효과들 ---
+    const initialChatCountRef = useRef(0);
+    const lastProgressRef = useRef(progress ?? 0);
+
+    // 1) pendingAgentDecision이 활성화(초기 실행 끝)될 때 초기 채팅 수 저장 및 진행률 보정
+    useEffect(() => {
+        if (pendingAgentDecision) {
+            const initialCount = countChatMessages(messages);
+            initialChatCountRef.current = initialCount;
+
+            const totalTurns = sessionResult?.totalTurns ?? initialCount;
+            const pct = Math.min(
+                100,
+                Math.round((initialCount / Math.max(1, totalTurns)) * 100),
+            );
+            if (typeof setProgress === "function") {
+                setProgress(pct);
+                lastProgressRef.current = pct;
+            }
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pendingAgentDecision]);
+
+    // 2) 메시지 / 에이전트 상태 변화에 따라 진행률 재계산
+    useEffect(() => {
+        if (typeof setProgress !== "function") return;
+
+        const currentCount = countChatMessages(messages);
+        const serverTotal = sessionResult?.totalTurns;
+
+        if (typeof serverTotal === "number" && serverTotal > 0) {
+            const pct = Math.min(
+                100,
+                Math.round((currentCount / Math.max(1, serverTotal)) * 100),
+            );
+            setProgress(pct);
+            lastProgressRef.current = pct;
+            return;
+        }
+
+        if (hasAgentRun && !agentRunning) {
+            setProgress(100);
+            lastProgressRef.current = 100;
+            return;
+        }
+
+        const initialCount = Math.max(1, initialChatCountRef.current || 0);
+        const estimatedTotal = Math.max(
+            currentCount,
+            Math.round(initialCount + (currentCount - initialCount) * 2) ||
+                initialCount + 4,
+        );
+        const pct = Math.min(
+            100,
+            Math.round((currentCount / Math.max(1, estimatedTotal)) * 100),
+        );
+
+        const newPct = Math.max(lastProgressRef.current, pct);
+        setProgress(newPct);
+        lastProgressRef.current = newPct;
+    }, [messages, hasAgentRun, agentRunning, sessionResult, setProgress]);
 
     return (
         <div
@@ -125,13 +198,8 @@ const SimulatorPage = ({
         >
             <div className="container mx-auto px-6 py-12">
                 <div
-                    className="
-                w-full max-w-[1400px] mx-auto
-                h-[calc(100vh-3rem)] md:h-[calc(100vh-4rem)] xl:h-[calc(100vh-6rem)]
-                rounded-3xl shadow-2xl
-                border border-[#3F4147] bg-[#2B2D31]
-                flex flex-col min-h-0
-            "
+                    className="w-full max-w-[1400px] mx-auto h-[calc(100vh-3rem)] rounded-3xl shadow-2xl border bg-[#2B2D31] flex flex-col min-h-0"
+                    style={{ borderColor: COLORS.border }}
                 >
                     <HudBar COLORS={COLORS} />
 
@@ -160,28 +228,33 @@ const SimulatorPage = ({
                                     : "캐릭터 미선택"}
                             </Badge>
                         </div>
+
                         <div className="flex items-center gap-2">
-                            {selectedScenario && simulationState === "IDLE" && (
-                                <button
-                                    onClick={() => {
-                                        setSelectedScenario(null);
-                                        setSelectedTag?.(null);
-                                        addSystem(
-                                            "시나리오를 다시 선택하세요.",
-                                        );
-                                    }}
-                                    className="px-3 py-2 rounded-md text-sm font-medium border hover:opacity-90 transition"
-                                    style={{
-                                        backgroundColor: "#313338",
-                                        borderColor: COLORS.border,
-                                        color: COLORS.sub,
-                                    }}
-                                >
-                                    ← 시나리오 다시 선택
-                                </button>
-                            )}
+                            {selectedScenario &&
+                                simulationState === "IDLE" &&
+                                !pendingAgentDecision && (
+                                    <button
+                                        onClick={() => {
+                                            setSelectedScenario(null);
+                                            setSelectedTag(null);
+                                            addSystem(
+                                                "시나리오를 다시 선택하세요.",
+                                            );
+                                        }}
+                                        className="px-3 py-2 rounded-md text-sm font-medium border hover:opacity-90 transition"
+                                        style={{
+                                            backgroundColor: "#313338",
+                                            borderColor: COLORS.border,
+                                            color: COLORS.sub,
+                                        }}
+                                    >
+                                        ← 시나리오 다시 선택
+                                    </button>
+                                )}
+
                             {selectedCharacter &&
-                                simulationState === "IDLE" && (
+                                simulationState === "IDLE" &&
+                                !pendingAgentDecision && (
                                     <button
                                         onClick={() => {
                                             setSelectedCharacter(null);
@@ -210,7 +283,6 @@ const SimulatorPage = ({
                             ref={scrollContainerRef}
                             className="h-full overflow-y-auto space-y-6"
                         >
-                            {/* 스피너 메시지 (로그가 없을 때만 표시) */}
                             {!messages.some((m) => m.type === "chat") && (
                                 <SpinnerMessage
                                     simulationState={simulationState}
@@ -218,10 +290,9 @@ const SimulatorPage = ({
                                 />
                             )}
 
-                            {/* ✅ CHANGED: message를 normalize 해서 MessageBubble로 전달 */}
                             {messages.map((m, index) => {
                                 const nm = normalizeMessage(m);
-                                const victimImageUrl = selectedCharacter
+                                const victimImg = selectedCharacter
                                     ? getVictimImage(
                                           selectedCharacter.photo_path,
                                       )
@@ -229,18 +300,88 @@ const SimulatorPage = ({
                                 return (
                                     <MessageBubble
                                         key={index}
-                                        // 기존 props
                                         message={nm}
                                         selectedCharacter={selectedCharacter}
-                                        victimImageUrl={victimImageUrl}
+                                        victimImageUrl={victimImg}
                                         COLORS={COLORS}
-                                        // ✅ NEW: 명시적 전달 (MessageBubble이 이 필드들을 쓰도록)
                                         label={nm.label}
                                         side={nm.side}
                                         role={nm.role}
                                     />
                                 );
                             })}
+
+                            {/* 인라인 에이전트 결정 UI */}
+                            {pendingAgentDecision &&
+                                simulationState === "IDLE" &&
+                                !hasAgentRun && (
+                                    <div className="flex justify-center mt-2">
+                                        <div
+                                            className="w-full max-w-[820px] p-4 rounded-md border"
+                                            style={{
+                                                backgroundColor: "#2B2D31",
+                                                borderColor: COLORS.border,
+                                            }}
+                                        >
+                                            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                                                <p className="text-sm text-[#B5BAC1]">
+                                                    에이전트를 사용하여 대화를
+                                                    이어보시겠습니까?
+                                                    <span className="ml-2 text-xs text-[#9AA0A8]">
+                                                        (에이전트는 추가
+                                                        분석/판단을 포함합니다)
+                                                    </span>
+                                                </p>
+
+                                                <div className="flex items-center gap-4 justify-end">
+                                                    {/* ✅ verbose 토글 */}
+                                                    <label className="inline-flex items-center gap-2 text-sm text-[#B5BAC1]">
+                                                        <input
+                                                            type="checkbox"
+                                                            className="accent-[#5865F2]"
+                                                            checked={
+                                                                !!agentVerbose
+                                                            }
+                                                            onChange={(e) =>
+                                                                setAgentVerbose(
+                                                                    e.target
+                                                                        .checked,
+                                                                )
+                                                            }
+                                                        />
+                                                        상세근거(verbose)
+                                                    </label>
+
+                                                    <button
+                                                        onClick={
+                                                            declineAgentRun
+                                                        }
+                                                        className="px-4 py-2 rounded bg-[#313338] text-[#DCDDDE] hover:opacity-90"
+                                                    >
+                                                        아니요
+                                                    </button>
+
+                                                    <button
+                                                        onClick={startAgentRun}
+                                                        disabled={
+                                                            agentRunning ||
+                                                            hasAgentRun
+                                                        }
+                                                        className={`px-4 py-2 rounded text-white ${
+                                                            agentRunning
+                                                                ? "opacity-50 cursor-not-allowed bg-[#5865F2]"
+                                                                : "bg-[#5865F2]"
+                                                        }`}
+                                                    >
+                                                        {agentRunning
+                                                            ? "로딩..."
+                                                            : "예"}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
 
                             {needScenario && (
                                 <div className="flex justify-start">
@@ -270,6 +411,7 @@ const SimulatorPage = ({
                                                 />
                                             ))}
                                         </div>
+
                                         <div
                                             className="flex-1 min-h-0 space-y-4 overflow-y-auto pr-1"
                                             style={{ maxHeight: "100%" }}
@@ -277,47 +419,9 @@ const SimulatorPage = ({
                                             {filteredScenarios.map((s) => (
                                                 <button
                                                     key={s.id}
-                                                    onClick={async () => {
-                                                        setSelectedScenario(s);
-
-                                                        try {
-                                                            const res =
-                                                                await fetch(
-                                                                    `/api/offenders/by-type/${encodeURIComponent(
-                                                                        s.type,
-                                                                    )}`,
-                                                                );
-                                                            if (!res.ok)
-                                                                throw new Error(
-                                                                    "서버 오류",
-                                                                );
-                                                            const offenders =
-                                                                await res.json();
-
-                                                            console.log(
-                                                                "조회된 offenders:",
-                                                                offenders,
-                                                            );
-
-                                                            addSystem(
-                                                                `${s.type} 유형 공격자 ${offenders.length}명 조회됨 (id: ${offenders
-                                                                    .map(
-                                                                        (o) =>
-                                                                            o.id,
-                                                                    )
-                                                                    .join(
-                                                                        ",",
-                                                                    )})`,
-                                                            );
-
-                                                            // 필요 시 setCharacters(offenders) 로 교체 가능
-                                                        } catch (err) {
-                                                            console.error(err);
-                                                            addSystem(
-                                                                "공격자 조회 실패",
-                                                            );
-                                                        }
-                                                    }}
+                                                    onClick={() =>
+                                                        setSelectedScenario(s)
+                                                    }
                                                     className="w-full text-left rounded-lg p-4 hover:opacity-90"
                                                     style={{
                                                         backgroundColor:
@@ -343,7 +447,8 @@ const SimulatorPage = ({
                                                             color: COLORS.sub,
                                                         }}
                                                     >
-                                                        {s.profile.purpose}
+                                                        {s.profile?.purpose ??
+                                                            ""}
                                                     </p>
                                                 </button>
                                             ))}
@@ -360,18 +465,12 @@ const SimulatorPage = ({
                                     {characters.map((c) => (
                                         <button
                                             key={c.id}
-                                            onClick={() => {
-                                                setSelectedCharacter(c);
-                                                setTimeout(() => {
-                                                    setAgentModalVisible(true);
-                                                }, 0);
-                                            }}
+                                            onClick={() =>
+                                                setSelectedCharacter(c)
+                                            }
                                         >
                                             <div
-                                                className="
-                        flex flex-col h-full rounded-2xl overflow-hidden
-                        border hover:border-[rgba(88,101,242,.45)] transition-colors
-                    "
+                                                className="flex flex-col h-full rounded-2xl overflow-hidden border hover:border-[rgba(88,101,242,.45)] transition-colors"
                                                 style={{
                                                     backgroundColor: "#313338",
                                                     borderColor: COLORS.border,
@@ -415,7 +514,6 @@ const SimulatorPage = ({
                                                         </span>
                                                     </div>
 
-                                                    {/* 기본 정보 - 한 줄에 하나씩 */}
                                                     <div
                                                         className="space-y-2 text-sm"
                                                         style={{
@@ -459,7 +557,6 @@ const SimulatorPage = ({
                                                         </div>
                                                     </div>
 
-                                                    {/* 지식 정보 */}
                                                     <div>
                                                         <span
                                                             className="block text-[12px] opacity-70 mb-2"
@@ -503,7 +600,6 @@ const SimulatorPage = ({
                                                         </div>
                                                     </div>
 
-                                                    {/* 성격 정보 (OCEAN) */}
                                                     <div>
                                                         <span
                                                             className="block text-[12px] opacity-70 mb-2"
@@ -579,46 +675,18 @@ const SimulatorPage = ({
                                     ))}
                                 </div>
                             )}
-                            {agentModalVisible && (
-                                <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
-                                    <div
-                                        className="bg-[#2B2D31] p-6 rounded-lg border"
-                                        style={{ borderColor: COLORS.border }}
-                                    >
-                                        <h3 className="text-xl font-semibold mb-4 text-white">
-                                            AI 에이전트를 사용하시겠습니까?
-                                        </h3>
-                                        <div className="flex justify-end gap-4">
-                                            <button
-                                                onClick={() => {
-                                                    setAgentUsed(true);
-                                                    setAgentModalVisible(false);
-                                                }}
-                                                className="px-4 py-2 rounded bg-[#5865F2] text-white"
-                                            >
-                                                예
-                                            </button>
-                                            <button
-                                                onClick={() => {
-                                                    setAgentUsed(false);
-                                                    setAgentModalVisible(false);
-                                                }}
-                                                className="px-4 py-2 rounded bg-[#313338] text-[#DCDDDE]"
-                                            >
-                                                아니오
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
 
+                            {/* 시작 버튼: 초기 실행을 이미 했으면 숨김 */}
                             {selectedScenario &&
                                 selectedCharacter &&
-                                simulationState === "IDLE" && (
+                                simulationState === "IDLE" &&
+                                !pendingAgentDecision &&
+                                !showReportPrompt &&
+                                !hasInitialRun && (
                                     <div className="flex justify-center">
                                         <button
                                             onClick={startSimulation}
-                                            disabled={startDisabled} // ✅ NEW: 실행 중엔 비활성화
+                                            disabled={startDisabled}
                                             className={`px-8 py-3 rounded-lg font-semibold text-lg ${
                                                 startDisabled
                                                     ? "opacity-60 cursor-not-allowed"
@@ -634,7 +702,7 @@ const SimulatorPage = ({
                                             <Play
                                                 className="inline mr-3"
                                                 size={20}
-                                            />
+                                            />{" "}
                                             시뮬레이션 시작
                                         </button>
                                     </div>
@@ -680,8 +748,7 @@ const SimulatorPage = ({
                             {simulationState === "FINISH" && (
                                 <button
                                     onClick={resetToSelection}
-                                    className="px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200
-                    bg-[#5865F2] text-white hover:bg-[#4752C4] hover:shadow-lg"
+                                    className="px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 bg-[#5865F2] text-white hover:bg-[#4752C4] hover:shadow-lg"
                                 >
                                     다시 선택하기
                                 </button>
@@ -691,6 +758,7 @@ const SimulatorPage = ({
                 </div>
             </div>
 
+            {/* 완료 배너: pendingAgentDecision 동안 리포트 버튼 비활성 */}
             {sessionResult && progress >= 100 && (
                 <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50">
                     <div
@@ -727,10 +795,71 @@ const SimulatorPage = ({
                             </div>
                             <button
                                 onClick={() => setCurrentPage("report")}
-                                className="px-6 py-2 rounded-md text-base font-medium"
+                                disabled={pendingAgentDecision}
+                                aria-disabled={pendingAgentDecision}
+                                title={
+                                    pendingAgentDecision
+                                        ? "에이전트 사용 여부 결정 후에 리포트를 보실 수 있습니다."
+                                        : "리포트 보기"
+                                }
+                                className={`px-6 py-2 rounded-md text-base font-medium transition-all duration-150 ${
+                                    pendingAgentDecision
+                                        ? "opacity-50 cursor-not-allowed"
+                                        : ""
+                                }`}
                                 style={{
                                     backgroundColor: COLORS.blurple,
                                     color: COLORS.white,
+                                    pointerEvents: pendingAgentDecision
+                                        ? "none"
+                                        : undefined,
+                                }}
+                            >
+                                리포트 보기
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 리포트 안내 모달 */}
+            {showReportPrompt && (
+                <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+                    <div
+                        className="bg-[#2B2D31] p-6 rounded-lg border"
+                        style={{ borderColor: COLORS.border }}
+                    >
+                        <h3 className="text-xl font-semibold mb-3 text-white">
+                            시뮬레이션이 완료되었습니다
+                        </h3>
+                        <p className="text-sm text-[#B5BAC1] mb-4">
+                            결과 리포트를 확인하시겠습니까?
+                        </p>
+                        <div className="flex justify-end gap-4">
+                            <button
+                                onClick={() => setShowReportPrompt(false)}
+                                className="px-4 py-2 rounded bg-[#313338] text-[#DCDDDE]"
+                            >
+                                닫기
+                            </button>
+                            <button
+                                onClick={() => setCurrentPage("report")}
+                                disabled={pendingAgentDecision}
+                                aria-disabled={pendingAgentDecision}
+                                title={
+                                    pendingAgentDecision
+                                        ? "에이전트 사용 여부 결정 후에 리포트를 보실 수 있습니다."
+                                        : "리포트 보기"
+                                }
+                                className={`px-4 py-2 rounded bg-[#5865F2] text-white ${
+                                    pendingAgentDecision
+                                        ? "opacity-50 cursor-not-allowed"
+                                        : ""
+                                }`}
+                                style={{
+                                    pointerEvents: pendingAgentDecision
+                                        ? "none"
+                                        : undefined,
                                 }}
                             >
                                 리포트 보기
