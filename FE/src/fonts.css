@@ -12,34 +12,70 @@
     font-weight: normal;
     font-style: normal;
     font-display: swap;
+
+  font-family: 'IyagiGGC';
+  src: url('./assets/fonts/IyagiGGC.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Cafe24PROUP';
+  src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2507-1@1.0/Cafe24PROUP.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
 }
 
 
 @font-face {
+
     font-family: 'HakgyoansimPuzzleTTF-Black';
     src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2408-5@1.0/HakgyoansimPuzzleTTF-Black.woff2') format('woff2');
     font-weight: normal;
     font-style: normal;
+
+  font-family: 'HakgyoansimPuzzleTTF-Black';
+  src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2408-5@1.0/HakgyoansimPuzzleTTF-Black.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+
 }
 
 
 @font-face {
+
     font-family: 'PFStardustExtraBold';
     src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2506-1@1.0/PFStardustExtraBold.woff2') format('woff2');
     font-weight: 800;
     font-style: normal;
+
+  font-family: 'PFStardustExtraBold';
+  src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2506-1@1.0/PFStardustExtraBold.woff2') format('woff2');
+  font-weight: 800;
+  font-style: normal;
+
 }
 
 
 @font-face {
+
     font-family: 'HakgyoansimPuzzleTTF-Outline';
     src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2408-5@1.0/HakgyoansimPuzzleTTF-Outline.woff2') format('woff2');
     font-weight: normal;
     font-style: normal;
+
+  font-family: 'HakgyoansimPuzzleTTF-Outline';
+  src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2408-5@1.0/HakgyoansimPuzzleTTF-Outline.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+
 }
 
 
 .iyagi-font {
+
     font-family: 'IyagiGGC', sans-serif;
 }
 
@@ -57,4 +93,23 @@
 
 .hakgyoansim-outline-font {
     font-family: 'HakgyoansimPuzzleTTF-Outline', sans-serif;
+
+  font-family: 'IyagiGGC', sans-serif;
+}
+
+.cafe24-font {
+  font-family: 'Cafe24PROUP', sans-serif;
+}
+
+.hakgyoansim-font {
+  font-family: 'HakgyoansimPuzzleTTF-Black', sans-serif;
+}
+
+.pfstardust-font {
+  font-family: 'PFStardustExtraBold', sans-serif;
+}
+
+.hakgyoansim-outline-font {
+  font-family: 'HakgyoansimPuzzleTTF-Outline', sans-serif;
+
 }

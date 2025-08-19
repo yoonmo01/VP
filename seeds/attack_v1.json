@@ -1,0 +1,336 @@
+[
+  {
+    "title": "기관 사칭 #1: 택배-카드사-금감원-검사 릴레이(24.10)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2024-10-01",
+      "summary": "택배기사→카드회사→금감원→검사 순으로 릴레이 사칭 후 수사·자금이체 압박",
+      "flow": ["택배기사 사칭", "카드사 사칭", "금융감독원 사칭", "검사 사칭"],
+      "initial_contact": { "channel": "phone_call", "vector": "impersonation" },
+      "opening": "택배 기사인데 본인 확인이 필요합니다. 안내 번호로 다시 연락 주세요.",
+      "hooks": ["명의도용 의심 유도", "수사 협조 요구", "자산보호 명목 송금"],
+      "script": [
+        "본인 명의로 문제가 발생했습니다. 금감원에 사고신고부터 하시죠.",
+        "검사 연결 드리겠습니다. 수사 협조가 필요합니다."
+      ],
+      "red_flags": [
+        "기관 간 전환 요구",
+        "자산보호 명목의 송금 지시",
+        "긴급성·압박"
+      ],
+      "loss_amount_krw": null,
+      "notes": "다단계 릴레이로 권위 전이 유도"
+    }
+  },
+  {
+    "title": "기관 사칭 #2: 카드사-금감원-검사 자산보호 송금 유도(24.07)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2024-07-01",
+      "summary": "해외결제·카드발급 알림 후 금감원·검사로 연결해 안전계좌 송금 요구",
+      "flow": ["금융회사 사칭", "금감원 사칭", "검사 사칭"],
+      "initial_contact": {
+        "channel": "phone_call",
+        "vector": "transaction_alert"
+      },
+      "opening": "해외결제 발생 알림입니다. 본인 아니시면 즉시 확인 바랍니다.",
+      "hooks": ["사고 신고 유도", "수사 연루 통보", "자산보호 송금"],
+      "script": [
+        "금감원에서 확인하시고, 검사 연결 받아 조치 받으세요.",
+        "안전계좌로 잠시 이체하시면 보호됩니다."
+      ],
+      "red_flags": ["기관 연결·전환", "안전계좌 송금 요구"],
+      "loss_amount_krw": null
+    }
+  },
+  {
+    "title": "기관 사칭 #3: 교통범칙금 스미싱 악성앱 설치(23.09)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-09-01",
+      "summary": "교통범칙금 통보 문자로 악성앱 설치 유도 후 개인정보 탈취·대금 편취",
+      "flow": ["문자 스미싱", "악성앱 설치", "개인정보 탈취", "자금 편취"],
+      "initial_contact": { "channel": "sms", "vector": "smishing_url" },
+      "opening": "교통범칙금 통보 안내. 내역 확인: [URL]",
+      "hooks": ["범칙금 공지 위장", "URL 클릭 유도"],
+      "script": ["미납 범칙금 확인을 위해 링크 접속이 필요합니다."],
+      "red_flags": ["출처 불명 URL", "앱 설치 유도", "과도한 권한 요구"],
+      "malware": "Android 악성앱(권한 탈취)",
+      "loss_amount_krw": 35000000
+    }
+  },
+  {
+    "title": "기관 사칭 #4: 민원24·과태료 사전고지 스미싱(24.04)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2024-04-01",
+      "summary": "민원24 과태료 고지 문자 위장, 악성앱 설치로 개인정보 유출·소액결제 등 피해",
+      "flow": [
+        "문자 스미싱",
+        "악성앱 설치",
+        "개인정보 유출",
+        "소액결제·무단이체"
+      ],
+      "initial_contact": { "channel": "sms", "vector": "smishing_url" },
+      "opening": "[민원24] 음식물쓰레기 미분리 신고 대상입니다. 확인 링크: <...>",
+      "hooks": ["공문 위장", "링크 클릭 유도"],
+      "red_flags": ["공식 도메인 미사용", "APK 설치 유도"],
+      "malware": "Android 악성앱",
+      "loss_amount_krw": 3000000
+    }
+  },
+  {
+    "title": "기관 사칭 #5: 방역지원금 지급 미끼로 신분증·카드 사진 요구(23.06)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-06-01",
+      "summary": "방역지원금 지급을 빌미로 신용카드·신분증 사진 요구 후 대금 인출",
+      "flow": ["기관 사칭 전화", "카카오톡 전송 요구", "계좌 인출"],
+      "initial_contact": {
+        "channel": "phone_call",
+        "vector": "benefit_grant_bait"
+      },
+      "opening": "확진자 방문으로 지원금 70만원 지급 대상입니다. 신분증/카드 사진 보내주세요.",
+      "hooks": ["지원금 미끼", "서류 제출 위장"],
+      "red_flags": ["사적 메신저로 신분증·카드 사진 요구"],
+      "loss_amount_krw": 17000000
+    }
+  },
+  {
+    "title": "기관 사칭 #6: 중국 공안 사칭 보석금 요구(23.06)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-06-01",
+      "summary": "중국 공안 사칭 국제전화로 수사 연루 통보·보석금 계좌 이체 요구",
+      "flow": ["국제전화", "수사 연루 통보", "보석금 이체 요구"],
+      "initial_contact": {
+        "channel": "phone_call",
+        "vector": "international_call"
+      },
+      "opening": "개인정보 유출 범죄 연루. 소환 방지 위해 보석금 송금 필요.",
+      "hooks": ["강압적 수사 협박", "보석금 명목 송금"],
+      "red_flags": ["해외 발신", "공식 절차 부재", "안전계좌 요구"],
+      "loss_amount_krw": 1000000
+    }
+  },
+  {
+    "title": "기관 사칭 #7: 병원 관계자 사칭 응급 입원비 요구(22.08)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2022-08-10",
+      "summary": "가족 응급 입원 빌미로 긴급 치료비 이체 요구",
+      "flow": ["메신저 접촉", "응급 입원 고지", "치료비 송금 요구"],
+      "initial_contact": {
+        "channel": "kakao_talk",
+        "vector": "emergency_bait"
+      },
+      "opening": "OO병원입니다. 어머니가 응급실 입원, 치료비 미납으로 치료 불가.",
+      "hooks": ["가족 건강·생명 위기", "긴급성 압박"],
+      "red_flags": ["병원 직원 신분증·영수증 미제시", "직접 이체 요구"],
+      "loss_amount_krw": 5000000
+    }
+  },
+  {
+    "title": "기관 사칭 #8: 금융회사 사칭—상품권 고액거래로 대출한도 상향 미끼",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": null,
+      "summary": "대출한도 상향을 미끼로 상품권 고액 결제 유도, 계좌 지급정지 등 2차 피해",
+      "flow": ["불법대출광고 접촉", "금융회사 사칭", "상품권 구매 지시"],
+      "initial_contact": {
+        "channel": "phone_call",
+        "vector": "loan_limit_bait"
+      },
+      "opening": "거래 실적 늘리면 대출한도 상향. 상품권 고액 결제부터 진행하세요.",
+      "hooks": ["특혜 제공 미끼", "단기간 실적 필요"],
+      "red_flags": ["상품권 요구", "타인에게 전달 지시"],
+      "loss_amount_krw": null
+    }
+  },
+  {
+    "title": "기관 사칭 #9: 검사 사칭—결백 입증 명목 송금·상품권 요구(23.05)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-05-01",
+      "summary": "계좌 범죄 연루 통보 후 결백 입증 명목으로 송금·상품권 요구",
+      "flow": ["검사 사칭 전화", "입증 요구", "송금·상품권 전송"],
+      "initial_contact": {
+        "channel": "phone_call",
+        "vector": "prosecutor_impersonation"
+      },
+      "opening": "서울중앙지검 검사입니다. 귀하 계좌가 범죄에 사용되었습니다.",
+      "hooks": ["결백 입증 강요", "상품권 요구"],
+      "red_flags": ["수사기관이 상품권 요구", "사적 메신저 전송 요구"],
+      "loss_amount_krw": 3300000
+    }
+  },
+  {
+    "title": "기관 사칭 #10: 택배배송 스미싱—번호이동·대출 개통(23.08)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-08-01",
+      "summary": "배송 알림 위장 URL로 악성앱 설치 → 번호이동·신규 단말 개통·대출 실행",
+      "flow": ["문자 스미싱", "악성앱 설치", "번호이동·대출 발급"],
+      "initial_contact": { "channel": "sms", "vector": "smishing_url" },
+      "opening": "상품을 배송했습니다. 확인 부탁합니다: [URL]",
+      "hooks": ["배송 알림 위장", "링크 클릭 유도"],
+      "red_flags": ["출처 불명 URL", "권한 과다 앱"],
+      "malware": "Android 악성앱",
+      "loss_amount_krw": 199832128
+    }
+  },
+  {
+    "title": "기관 사칭 #11: 서민금융진흥원·저축은행 사칭 대환대출(23.08)",
+    "category": "institution_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-07-21",
+      "summary": "대환대출 미끼로 기존대출 상환 요구, 반복 송금 유도",
+      "flow": ["진흥원 사칭 전화", "저축은행 직원 사칭", "기존대출 상환 요구"],
+      "initial_contact": {
+        "channel": "phone_call",
+        "vector": "refinance_bait"
+      },
+      "opening": "저금리 대환대출이 가능하십니다. 기존 대출 상환이 선행되어야 합니다.",
+      "hooks": ["대환대출 미끼", "계약 위반 겁주기"],
+      "red_flags": ["선이체 요구", "기관 간 전환"],
+      "loss_amount_krw": 11000000
+    }
+  },
+  {
+    "title": "지인 사칭 #1: 모바일 부고장 스미싱(24.01)",
+    "category": "acquaintance_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2024-01-01",
+      "summary": "지인 사칭 부고장 문자로 악성앱 설치 유도, 계정·OTP 탈취 후 대규모 편취",
+      "flow": ["문자 스미싱", "악성앱 설치", "계정·OTP 탈취", "자금 편취"],
+      "initial_contact": { "channel": "sms", "vector": "smishing_url" },
+      "opening": "부고 안내드립니다. 자세한 내용 확인: [URL]",
+      "hooks": ["긴급·감정 자극", "링크 클릭 유도"],
+      "red_flags": ["부고장 위장", "앱 설치 유도"],
+      "loss_amount_krw": 130000000
+    }
+  },
+  {
+    "title": "지인 사칭 #2: 자녀 사칭—보험 신청·원격제어 앱(23.05)",
+    "category": "acquaintance_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-05-01",
+      "summary": "자녀 사칭 메시지로 신분증·계좌정보 요구, 팀뷰어 설치 후 이체",
+      "flow": ["문자 접촉", "카카오톡 유도", "원격제어 앱 설치", "대금 이체"],
+      "initial_contact": {
+        "channel": "kakao_talk",
+        "vector": "child_impersonation"
+      },
+      "opening": "휴대폰이 고장나서 급히 보험 신청해야 해. 신분증 사진 좀 보내줘.",
+      "hooks": ["가족 신뢰 악용", "원격제어 유도"],
+      "red_flags": ["원격제어 앱 설치", "신분증·계좌·비밀번호 요구"],
+      "loss_amount_krw": 79370500
+    }
+  },
+  {
+    "title": "지인 사칭 #3: 모바일 청첩장 스미싱(23.07)",
+    "category": "acquaintance_impersonation",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-07-01",
+      "summary": "청첩장 위장 URL로 악성앱 설치 후 대출·계정 탈취 등 대규모 피해",
+      "flow": ["문자 스미싱", "악성앱 설치", "정보 변경·부정 대출"],
+      "initial_contact": { "channel": "sms", "vector": "smishing_url" },
+      "opening": "모바일 청첩장 보내요. 링크에서 확인해주세요.",
+      "hooks": ["경조사 위장", "링크 클릭 유도"],
+      "red_flags": ["비공식 도메인", "앱 권한 과다"],
+      "loss_amount_krw": 85000000
+    }
+  },
+  {
+    "title": "대출 빙자 #1: 정부 대환대출 광고 유도(24.01)",
+    "category": "loan_scam",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2024-01-01",
+      "summary": "유튜브 광고로 개인정보 수집 후 정부지원 대환대출 가장, 기존대출 상환 요구",
+      "flow": ["온라인 광고 접촉", "직원 사칭", "기존 대출 상환 요구"],
+      "initial_contact": { "channel": "web_form", "vector": "ad_lead_capture" },
+      "opening": "정부 대환대출 간편 신청 완료. 추가 확인 위해 연락드립니다.",
+      "hooks": ["정부지원 명칭 도용", "법 위반 겁주기"],
+      "red_flags": ["선입금·상환 요구", "기관 사칭"],
+      "loss_amount_krw": null
+    }
+  },
+  {
+    "title": "대출 빙자 #2: 정부지원 저금리 가장·APK 설치(23.05)",
+    "category": "loan_scam",
+    "is_active": true,
+    "body": {
+      "occurred_at": "2023-05-01",
+      "summary": "저금리 대출 빙자, 카카오톡으로 APK 전송해 신청서 작성 유도 후 기존대출 상환금 갈취",
+      "flow": [
+        "전화 모집",
+        "메신저 APK 전송",
+        "신청서 작성 위장",
+        "상환금 송금"
+      ],
+      "initial_contact": { "channel": "kakao_talk", "vector": "apk_sideload" },
+      "opening": "정부지원 저금리(5.8%)로 최대 5,800만원까지 가능합니다. 앱 설치 후 신청서 작성하세요.",
+      "hooks": ["정부지원 미끼", "사설 APK 설치"],
+      "red_flags": ["공식 앱스토어 미사용", "선이체 요구"],
+      "malware": "Android APK(side-load)",
+      "loss_amount_krw": 30000000
+    }
+  },
+  {
+    "title": "대출 빙자 #3: 신분증·대포폰·증권계좌 악용 비대면 대출(사례 C)",
+    "category": "loan_scam",
+    "is_active": true,
+    "body": {
+      "occurred_at": null,
+      "summary": "저축은행 사칭 문자 후 신분증 탈취→대포폰·증권 계좌 개설→비대면 대출 탈취",
+      "flow": [
+        "사칭 문자",
+        "신분증 수집",
+        "대포폰 개통",
+        "증권 계좌 개설",
+        "비대면 대출 실행"
+      ],
+      "initial_contact": { "channel": "sms", "vector": "loan_bait" },
+      "opening": "대출 한도 증액 가능 안내입니다. 본인 확인을 위해 신분증 전송 바랍니다.",
+      "hooks": ["한도 증액 미끼", "서류 전송 요구"],
+      "red_flags": ["신분증 전송 요구", "비대면 계좌 개설 강요"],
+      "loss_amount_krw": 5000000
+    }
+  },
+  {
+    "title": "유도 수법 카탈로그",
+    "category": "tactics_catalog",
+    "is_active": true,
+    "body": {
+      "summary": "기관·지인·대출 빙자형 전반에서 공통적으로 사용되는 심리·행동 유도 수법",
+      "tactics": [
+        "고립된 장소로 유도하여 주변인의 도움 차단",
+        "구체적 사건 내용·전문용어 구사로 권위·신뢰 위장",
+        "출석 소환장 발부 등 법 집행 압박",
+        "전화로는 개인정보를 요구하지 않는다며 방심 유도",
+        "여러 명이 역할 분담(기관 간 전환)으로 현실감 강화",
+        "자녀·가족 사칭, 급한 사유(액정 파손 등)로 금전·상품권 요구",
+        "앱 설치(원격제어/악성앱) 또는 인증번호 요청",
+        "실제와 구분 어려운 비명·흐느낌 등 음성 재현으로 공포 유발",
+        "지속적인 통화 유지로 제3자 확인을 차단",
+        "안전계좌로 입금하면 돌려준다는 거짓 약속",
+        "가짜 공문·신분증 제시로 신뢰 유도"
+      ]
+    }
+  }
+]

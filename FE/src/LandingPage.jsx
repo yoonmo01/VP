@@ -1,6 +1,6 @@
 import React from "react";
 import { Play } from "lucide-react";
-import bg from "./assets/첫화면.png";
+import bg from "./assets/bg.png";
 import "./fonts.css";
 
 const LandingPage = ({ setCurrentPage }) => (
@@ -18,7 +18,8 @@ const LandingPage = ({ setCurrentPage }) => (
                 보이스피싱 시뮬레이션
             </h1>
             <p className="text-xl md:text-2xl text-gray-200 hakgyoansim-font">
-                지역사회 피싱 범죄 예방을 위한 AI 에이전트 활용 연구 및 대응 방안 개발
+                지역사회 피싱 범죄 예방을 위한 AI 에이전트 활용 연구 및 대응
+                방안 개발
             </p>
             <button
                 onClick={() => setCurrentPage("simulator")}

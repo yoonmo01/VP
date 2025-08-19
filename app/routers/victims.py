@@ -9,7 +9,7 @@ from typing import List
 router = APIRouter(tags=["victims"])
 
 
-@router.post("/victims", response_model=VictimOut)
+@router.post("/victims/", response_model=VictimOut)
 def create_victim(payload: VictimCreate, db: Session = Depends(get_db)):
     obj = m.Victim(name=payload.name,
                    meta=payload.meta,
@@ -21,7 +21,7 @@ def create_victim(payload: VictimCreate, db: Session = Depends(get_db)):
     return obj
 
 
-@router.get("/victims", response_model=List[VictimOut])
+@router.get("/victims/", response_model=List[VictimOut])
 def get_victims(db: Session = Depends(get_db)):
     return db.query(m.Victim).all()
 

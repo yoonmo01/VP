@@ -2,22 +2,26 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const target = (process.env.VITE_API_URL || "http://127.0.0.1:8000").replace(
+  /\/$/,
+  "",
+);
+
 export default defineConfig({
   plugins: [react()],
   server: {
     host: true,
-    port: 5173, // 프론트 고정
-    hmr: { 
-      protocol: "ws", 
-      host: "localhost", 
-      port: 5173 
-    }, // WebSocket 프로토콜 수정
+    port: 5173,
+    hmr: {
+      protocol: "wss",
+      host: "65f2f4ae-a5b5-4f68-b2f6-2253fc571dd7-00-mog1t9mu62qx.pike.replit.dev", // ★ 포트없이
+      clientPort: 443, // ★ wss는 443
+    },
     proxy: {
       "^/api": {
-        // FE가 API 부를 땐 프록시로 내부 8000 사용
-        target: "http://127.0.0.1:8000",
+        target,
         changeOrigin: true,
-        secure: false,
+        secure: true,
         ws: true,
       },
     },
