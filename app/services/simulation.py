@@ -54,14 +54,21 @@ def _assert_turn_role(turn_index: int, role: str):
         raise ValueError(f"Turn {turn_index} must be {expected}, got {role}")
 
 
-def _save_turn(db: Session,
-               case_id: UUID,
-               offender_id: int,
-               victim_id: int,
-               turn_index: int,
-               role: str,
-               content: str,
-               label: str | None = None):
+def _save_turn(
+    db: Session,
+    case_id: UUID,
+    offender_id: int,
+    victim_id: int,
+    turn_index: int,
+    role: str,
+    content: str,
+    label: str | None = None,
+    *,
+    use_agent: bool = False,
+    run_no: int = 1,
+    guidance_type: str | None = None,
+    guideline: str | None = None,
+):
     _assert_turn_role(turn_index, role)
     log = m.ConversationLog(
         case_id=case_id,
@@ -71,65 +78,92 @@ def _save_turn(db: Session,
         role=role,
         content=content,
         label=label,
+        # ✅ 신규 필드 적재
+        use_agent=use_agent,
+        run=run_no,
+        guidance_type=guidance_type,
+        guideline=guideline,
     )
     db.add(log)
     db.commit()
 
 
+# ⬇️ 함수 시작부의 "케이스 생성" 부분 교체
 def run_two_bot_simulation(db: Session,
-                           req: ConversationRunRequest) -> Tuple[UUID, int]:
-    # 케이스 생성
-    case = m.AdminCase(scenario=req.case_scenario or {})
-    db.add(case)
-    db.commit()
-    db.refresh(case)
+                           req: "ConversationRunRequest") -> Tuple[UUID, int]:
+    # 케이스 재사용 or 생성
+    case_id_override = getattr(req, "case_id_override", None)
+    if case_id_override:
+        case = db.get(m.AdminCase, case_id_override)
+        if not case:
+            raise ValueError(f"case {case_id_override} not found")
+    else:
+        case = m.AdminCase(scenario=req.case_scenario or {})
+        db.add(case)
+        db.commit()
+        db.refresh(case)
 
     offender = db.get(m.PhishingOffender, req.offender_id)
     victim = db.get(m.Victim, req.victim_id)
     if offender is None:
         raise ValueError(f"Offender {req.offender_id} not found")
-    if victim is None:
-        raise ValueError(f"Victim {req.victim_id} not found")
+    if victim is None: raise ValueError(f"Victim {req.victim_id} not found")
 
-    # LLM 준비
+    # LLM 준비 (동일)
     attacker_llm = attacker_chat()
     victim_llm = victim_chat()
     attacker_chain = ATTACKER_PROMPT | attacker_llm
     victim_chain = VICTIM_PROMPT | victim_llm
 
+    # ⬇️ 지침/표기
+    use_agent_flag = bool(getattr(req, "use_agent", False))
+    run_no = int(getattr(req, "run_no", 1))
+    gtype = getattr(req, "guidance_type", None)
+    gtext = getattr(req, "guideline", None)
+
+    # 라운드 수 보정 (max_rounds 없으면 max_turns 사용)
+    max_rounds = getattr(req, "max_rounds", getattr(req, "max_turns", 30))
+
+    # 나머지(동일)...
     history_attacker: list = []
     history_victim: list = []
     turn_index = 0
     attacks = replies = 0
 
     attacker_blocks = _mk_attacker_blocks_from_req(req)
-
-    # 시뮬레이션 루프 (조기 종료/룰 기반 판정 없음)
     last_victim_text = "상대방이 아직 응답하지 않았다. 너부터 통화를 시작하라."
     last_offender_text = ""
 
-    for _ in range(req.max_rounds):
-        # ---- 공격자 턴 ----
-        if attacks >= MAX_OFFENDER_TURNS:
-            break
+    for _ in range(max_rounds):
+        if attacks >= MAX_OFFENDER_TURNS: break
         attacker_msg = attacker_chain.invoke({
             "history": history_attacker,
             "last_victim": last_victim_text,
             **attacker_blocks,
+            "guidance": gtext,  # ← 템플릿에 {guidance} 추가해 쓰면 효과
+            "guidance_type": gtype,
         })
         attacker_text = getattr(attacker_msg, "content",
                                 str(attacker_msg)).strip()
-        _save_turn(db, case.id, offender.id, victim.id, turn_index, "offender",
-                   attacker_text)
+        _save_turn(db,
+                   case.id,
+                   offender.id,
+                   victim.id,
+                   turn_index,
+                   "offender",
+                   attacker_text,
+                   None,
+                   use_agent=use_agent_flag,
+                   run_no=run_no,
+                   guidance_type=gtype,
+                   guideline=gtext)
         history_attacker.append(AIMessage(attacker_text))
         history_victim.append(HumanMessage(attacker_text))
         last_offender_text = attacker_text
         turn_index += 1
         attacks += 1
 
-        # ---- 피해자 턴 ----
-        if replies >= MAX_VICTIM_TURNS:
-            break
+        if replies >= MAX_VICTIM_TURNS: break
         victim_msg = victim_chain.invoke({
             "history":
             history_victim,
@@ -142,19 +176,31 @@ def run_two_bot_simulation(db: Session,
             or getattr(victim, "knowledge", "정보 없음"),
             "traits":
             getattr(req, "traits", None) or getattr(victim, "traits", "정보 없음"),
+            "guidance":
+            gtext,
+            "guidance_type":
+            gtype,
         })
         victim_text = getattr(victim_msg, "content", str(victim_msg)).strip()
-        _save_turn(db, case.id, offender.id, victim.id, turn_index, "victim",
-                   victim_text)
+        _save_turn(db,
+                   case.id,
+                   offender.id,
+                   victim.id,
+                   turn_index,
+                   "victim",
+                   victim_text,
+                   None,
+                   use_agent=use_agent_flag,
+                   run_no=run_no,
+                   guidance_type=gtype,
+                   guideline=gtext)
         history_victim.append(AIMessage(victim_text))
         history_attacker.append(HumanMessage(victim_text))
         last_victim_text = victim_text
         turn_index += 1
         replies += 1
 
-    # ✅ 루프 종료 후: 무조건 LLM 판정 실행 (관리자 요약)
     summarize_case(db, case.id)
-
     return case.id, turn_index
 
 

@@ -11,6 +11,7 @@ from app.db.base import Base
 # ✅ __init__.py 덕분에 라우터들을 직접 가져올 수 있음
 from app.routers import health, offenders, victims, conversations, admin_cases
 from app.routers import conversations_read, simulator as simulator_router
+from app.routers import agent as agent_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -41,9 +42,10 @@ app.include_router(victims, prefix=settings.API_PREFIX)
 app.include_router(conversations, prefix=settings.API_PREFIX)
 app.include_router(admin_cases, prefix=settings.API_PREFIX)
 
-# 이 두 개는 아직 모듈이므로 .router 필요
+# 이 3 개는 아직 모듈이므로 .router 필요
 app.include_router(conversations_read.router, prefix=settings.API_PREFIX)
 app.include_router(simulator_router.router, prefix=settings.API_PREFIX)
+app.include_router(agent_router.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")

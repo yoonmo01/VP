@@ -1,5 +1,4 @@
 @font-face {
-<<<<<<< HEAD
     font-family: 'IyagiGGC';
     src: url('./assets/fonts/IyagiGGC.woff') format('woff');
     font-weight: normal;
@@ -13,7 +12,7 @@
     font-weight: normal;
     font-style: normal;
     font-display: swap;
-=======
+
   font-family: 'IyagiGGC';
   src: url('./assets/fonts/IyagiGGC.woff') format('woff');
   font-weight: normal;
@@ -27,57 +26,56 @@
   font-weight: normal;
   font-style: normal;
   font-display: swap;
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
 }
 
 
 @font-face {
-<<<<<<< HEAD
+
     font-family: 'HakgyoansimPuzzleTTF-Black';
     src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2408-5@1.0/HakgyoansimPuzzleTTF-Black.woff2') format('woff2');
     font-weight: normal;
     font-style: normal;
-=======
+
   font-family: 'HakgyoansimPuzzleTTF-Black';
   src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2408-5@1.0/HakgyoansimPuzzleTTF-Black.woff2') format('woff2');
   font-weight: normal;
   font-style: normal;
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
+
 }
 
 
 @font-face {
-<<<<<<< HEAD
+
     font-family: 'PFStardustExtraBold';
     src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2506-1@1.0/PFStardustExtraBold.woff2') format('woff2');
     font-weight: 800;
     font-style: normal;
-=======
+
   font-family: 'PFStardustExtraBold';
   src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2506-1@1.0/PFStardustExtraBold.woff2') format('woff2');
   font-weight: 800;
   font-style: normal;
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
+
 }
 
 
 @font-face {
-<<<<<<< HEAD
+
     font-family: 'HakgyoansimPuzzleTTF-Outline';
     src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2408-5@1.0/HakgyoansimPuzzleTTF-Outline.woff2') format('woff2');
     font-weight: normal;
     font-style: normal;
-=======
+
   font-family: 'HakgyoansimPuzzleTTF-Outline';
   src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2408-5@1.0/HakgyoansimPuzzleTTF-Outline.woff2') format('woff2');
   font-weight: normal;
   font-style: normal;
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
+
 }
 
 
 .iyagi-font {
-<<<<<<< HEAD
+
     font-family: 'IyagiGGC', sans-serif;
 }
 
@@ -95,7 +93,7 @@
 
 .hakgyoansim-outline-font {
     font-family: 'HakgyoansimPuzzleTTF-Outline', sans-serif;
-=======
+
   font-family: 'IyagiGGC', sans-serif;
 }
 
@@ -113,5 +111,5 @@
 
 .hakgyoansim-outline-font {
   font-family: 'HakgyoansimPuzzleTTF-Outline', sans-serif;
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
+
 }

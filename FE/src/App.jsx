@@ -19,20 +19,27 @@ const COLORS = {
   white: "#FFFFFF",
 };
 
-/* ================== 설정(필수 확인) ================== */
-/*
-  ▶ API_BASE: 로컬백엔드 주소 (변경 금지: 로컬 개발시는 아래 상태 유지)
-  ▶ API_PREFIX:
-    - 만약 FastAPI에서 include_router(router, prefix="/api")로 등록했다면 "/api"
-    - 라우터를 루트에 등록했다면 "" (빈 문자열)
-*/
-const API_BASE = "http://localhost:8000";
-const API_PREFIX = "/api"; // ← 필요하면 ""로 바꿔주세요
+const RAW_API_BASE = import.meta.env?.VITE_API_URL || window.location.origin;
+
+// 2) 끝 슬래시 제거
+const API_BASE = RAW_API_BASE.replace(/\/$/, "");
+
+// 3) 기존 프리픽스 유지
+const API_PREFIX = "/api";
+
+// 4) 최종 API root
+export const API_ROOT = `${API_BASE}${API_PREFIX}`;
+
+// const API_BASE = "https://65f2f4ae-a5b5-4f68-b2f6-2253fc571dd7-00-mog1t9mu62qx.pike.replit.dev";
+// const API_PREFIX = "/api";
+
+console.log("VITE_API_URL =", import.meta.env.VITE_API_URL);
+console.log("API_ROOT =", API_ROOT);
 
 /* ================== 공통 fetch 유틸 (timeout, JSON 파싱, 오류 처리) ================== */
 async function fetchWithTimeout(
   url,
-  { method = "GET", headers = {}, body = null, timeout = 100000 } = {}
+  { method = "GET", headers = {}, body = null, timeout = 100000 } = {},
 ) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
@@ -62,77 +69,88 @@ async function fetchWithTimeout(
 }
 
 /* ================== 백엔드 라우트별 헬퍼 ================== */
+//시나리오 전체
 async function getOffenders() {
   return fetchWithTimeout(`${API_BASE}${API_PREFIX}/offenders/`);
 }
+
+//시나리오 단일
 async function getOffender(offenderId) {
   return fetchWithTimeout(
-    `${API_BASE}${API_PREFIX}/offenders/${encodeURIComponent(offenderId)}`
-  );
-}
-async function getVictims() {
-  return fetchWithTimeout(`${API_BASE}${API_PREFIX}/victims`);
-}
-async function getVictim(victimId) {
-  return fetchWithTimeout(
-    `${API_BASE}${API_PREFIX}/victims/${encodeURIComponent(victimId)}`
-  );
-}
-async function getCaseFull(caseId) {
-  return fetchWithTimeout(
-    `${API_BASE}${API_PREFIX}/${encodeURIComponent(caseId)}/full`
-  );
-}
-async function getConversationBundle(caseId) {
-  return fetchWithTimeout(
-    `${API_BASE}${API_PREFIX}/conversations/${encodeURIComponent(caseId)}`
+    `${API_BASE}${API_PREFIX}/offenders/${encodeURIComponent(offenderId)}`,
   );
 }
 
-// ✅ run_async 킥 (잡 시작)
+//피해자 전체
+async function getVictims() {
+  return fetchWithTimeout(`${API_BASE}${API_PREFIX}/victims/`);
+}
+
+//피해자 단일
+async function getVictim(victimId) {
+  return fetchWithTimeout(
+    `${API_BASE}${API_PREFIX}/victims/${encodeURIComponent(victimId)}`,
+  );
+}
+
+// 케이스아이디 + 피싱여부 + 근거 + 대화로그
+async function getCaseFull(caseId) {
+  return fetchWithTimeout(
+    `${API_BASE}${API_PREFIX}/admin-cases/${encodeURIComponent(caseId)}/full`,
+  );
+}
+
+// 케이스아이디 + offender 정보 + victim 정보 + 대화로그 + 시간
+async function getConversationBundle(caseId) {
+  return fetchWithTimeout(
+    `${API_BASE}${API_PREFIX}/conversations/${encodeURIComponent(caseId)}`,
+  );
+}
+
+// ✅ run_async 킥 (잡 시작) -> job_id, status 반환
 async function runConversationAsync(offenderId, victimId, payload = {}) {
   return fetchWithTimeout(
     `${API_BASE}${API_PREFIX}/conversations/run_async/${encodeURIComponent(
-      offenderId
+      offenderId,
     )}/${encodeURIComponent(victimId)}`,
     {
       method: "POST",
       body: payload, // fetchWithTimeout가 JSON.stringify 해줌
       timeout: 30000,
-    }
+    },
   );
 }
 
-// ✅ 잡 상태 조회
+// ✅ 잡 상태 조회 -> not_found | running | done | error 반환
 async function getJobStatus(jobId) {
   return fetchWithTimeout(
     `${API_BASE}${API_PREFIX}/conversations/job/${encodeURIComponent(jobId)}`,
-    { timeout: 15000 }
+    { timeout: 15000 },
   );
 }
 
-// ✅ tail(증분) 조회
+// ✅ tail(증분) 조회 -> 케이스 아이디 + 턴 개수 + 대화 로그 / 피싱여부와 근거는 null
 async function getConversationTail(caseId, afterTurnIndex = -1) {
   return fetchWithTimeout(
     `${API_BASE}${API_PREFIX}/conversations/${encodeURIComponent(
-      caseId
+      caseId,
     )}/tail?after=${afterTurnIndex}`,
-    { timeout: 20000 }
+    { timeout: 20000 },
   );
 }
 
-// (참고) 동기 전체 실행 버전 (남겨둠)
+//(참고) 동기 전체 실행 버전 -> 케이스 아이디 + 턴 개수 + 대화 로그 + 피싱 여부 + 피싱 근거
 // async function runConversation(offenderId, victimId, payload = {}) {
 //   return fetchWithTimeout(
 //     `${API_BASE}${API_PREFIX}/conversations/run/${encodeURIComponent(
-//       offenderId
+//       offenderId,
 //     )}/${encodeURIComponent(victimId)}`,
 //     {
 //       method: "POST",
 //       headers: { "Content-Type": "application/json" },
 //       body: JSON.stringify(payload),
 //       timeout: 240000,
-//     }
+//     },
 //   );
 // }
 
@@ -172,20 +190,16 @@ const App = () => {
   // ✅ Victims 이미지 동적 import 함수
   const getVictimImage = (photoPath) => {
     if (!photoPath) return null;
-<<<<<<< HEAD
-    
-=======
 
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
     try {
       // "/static/images/victims/2.png" -> "2.png" 추출
-      const fileName = photoPath.split('/').pop();
+      const fileName = photoPath.split("/").pop();
       if (fileName) {
         // 동적 import로 assets/victims 폴더의 이미지 로드
         return new URL(`./assets/victims/${fileName}`, import.meta.url).href;
       }
     } catch (error) {
-      console.warn('이미지 로드 실패:', error);
+      console.warn("이미지 로드 실패:", error);
     }
     return null;
   };
@@ -208,7 +222,7 @@ const App = () => {
     content,
     timestamp = null,
     senderLabel = null, // 화면에 표시될 이름
-    side = null // "left" | "right"
+    side = null, // "left" | "right"
   ) =>
     setMessages((prev) => [
       ...prev,
@@ -344,12 +358,13 @@ const App = () => {
 
   const finishSimulation = () => {
     setSimulationState("FINISH");
-    setSessionResult((prev) =>
-      prev ?? {
-        isPhishing: true,
-        technique: "기관사칭",
-        confidence: 95,
-      }
+    setSessionResult(
+      (prev) =>
+        prev ?? {
+          isPhishing: true,
+          technique: "기관사칭",
+          confidence: 95,
+        },
     );
   };
 
@@ -378,7 +393,8 @@ const App = () => {
             const victimLabel =
               log.victim_name ||
               (selectedCharacter ? `피해자${selectedCharacter.id}` : "피해자");
-            const displayLabel = role === "offender" ? offenderLabel : victimLabel;
+            const displayLabel =
+              role === "offender" ? offenderLabel : victimLabel;
             const side = role === "offender" ? "left" : "right";
 
             const ts =
@@ -386,14 +402,27 @@ const App = () => {
                 ? new Date(log.created_kst).toLocaleTimeString()
                 : log.created_kst;
 
-            if (role === "analysis" || role === "system" || log.label === "analysis") {
+            if (
+              role === "analysis" ||
+              role === "system" ||
+              log.label === "analysis"
+            ) {
               addAnalysis(log.content ?? "");
             } else {
-              addChat(role || "offender", log.content ?? "", ts, displayLabel, side);
+              addChat(
+                role || "offender",
+                log.content ?? "",
+                ts,
+                displayLabel,
+                side,
+              );
             }
 
             if (typeof log.turn_index === "number") {
-              lastTurnRef.current = Math.max(lastTurnRef.current, log.turn_index);
+              lastTurnRef.current = Math.max(
+                lastTurnRef.current,
+                log.turn_index,
+              );
             }
           });
 
@@ -401,7 +430,7 @@ const App = () => {
           if (typeof totalTurns === "number" && totalTurns >= 0) {
             const pct = Math.min(
               100,
-              ((lastTurnRef.current + 1) / Math.max(1, totalTurns)) * 100
+              ((lastTurnRef.current + 1) / Math.max(1, totalTurns)) * 100,
             );
             setProgress(pct);
           } else {
@@ -426,68 +455,68 @@ const App = () => {
   };
 
   // job 폴링 시작
-const startJobPolling = (jobId) => {
-  if (jobPollRef.current) clearInterval(jobPollRef.current);
+  const startJobPolling = (jobId) => {
+    if (jobPollRef.current) clearInterval(jobPollRef.current);
 
-  jobPollRef.current = setInterval(async () => {
-    try {
-      const st = await getJobStatus(jobId);
-      if (!st) return;
+    jobPollRef.current = setInterval(async () => {
+      try {
+        const st = await getJobStatus(jobId);
+        if (!st) return;
 
-      if (st.status === "error") {
-        clearInterval(jobPollRef.current);
-        jobPollRef.current = null;
-        addSystem(`시뮬레이션 실패: ${st.error || "알 수 없는 오류"}`);
-        setSimulationState("IDLE");
-      } else if (st.status === "done" && st.case_id) {
-        clearInterval(jobPollRef.current);
-        jobPollRef.current = null;
-        setCurrentCaseId(st.case_id);
+        if (st.status === "error") {
+          clearInterval(jobPollRef.current);
+          jobPollRef.current = null;
+          addSystem(`시뮬레이션 실패: ${st.error || "알 수 없는 오류"}`);
+          setSimulationState("IDLE");
+        } else if (st.status === "done" && st.case_id) {
+          clearInterval(jobPollRef.current);
+          jobPollRef.current = null;
+          setCurrentCaseId(st.case_id);
 
-        try {
-          // ✅ 완료된 case_id 로 전체 로그 가져오기
-          const full = await getConversationBundle(st.case_id);
-          if (!full || !Array.isArray(full.logs)) {
-            addSystem("대화 로그를 불러오지 못했습니다.");
-            setSimulationState("IDLE");
-            return;
-          }
+          try {
+            // ✅ 완료된 case_id 로 전체 로그 가져오기
+            const full = await getConversationBundle(st.case_id);
+            if (!full || !Array.isArray(full.logs)) {
+              addSystem("대화 로그를 불러오지 못했습니다.");
+              setSimulationState("IDLE");
+              return;
+            }
 
-          // ✅ runSimulation 으로 ‘재생’ 실행
-          runSimulation({
-            logs: full.logs,
-            case: {
-              id: full.case_id,
+            // ✅ runSimulation 으로 ‘재생’ 실행
+            runSimulation({
+              logs: full.logs,
+              case: {
+                id: full.case_id,
+                phishing: full.phishing,
+                evidence: full.evidence,
+              },
+            });
+
+            // ✅ 세션 결과 저장
+            setSessionResult({
               phishing: full.phishing,
+              isPhishing: full.phishing, // (호환용)
               evidence: full.evidence,
-            },
-          });
-
-          // ✅ 세션 결과 저장
-          setSessionResult({
-            phishing: full.phishing,
-            isPhishing: full.phishing, // (호환용)
-            evidence: full.evidence,
-            totalTurns: full.total_turns,
-            agentUsed, // 있으면 함께 저장
-          });
-        } catch (err) {
-          console.error("로그 조회 실패:", err);
-          addSystem("대화 로그 로딩 중 오류가 발생했습니다.");
+              totalTurns: full.total_turns,
+              agentUsed, // 있으면 함께 저장
+            });
+          } catch (err) {
+            console.error("로그 조회 실패:", err);
+            addSystem("대화 로그 로딩 중 오류가 발생했습니다.");
+            setSimulationState("IDLE");
+          }
+        } else if (st.status === "not_found") {
+          clearInterval(jobPollRef.current);
+          jobPollRef.current = null;
+          addSystem("작업을 찾을 수 없습니다. 다시 시도해주세요.");
           setSimulationState("IDLE");
         }
-      } else if (st.status === "not_found") {
-        clearInterval(jobPollRef.current);
-        jobPollRef.current = null;
-        addSystem("작업을 찾을 수 없습니다. 다시 시도해주세요.");
-        setSimulationState("IDLE");
+        // running일 때는 그대로 폴링 유지
+      } catch (e) {
+        console.warn("job 폴링 실패:", e);
       }
-      // running일 때는 그대로 폴링 유지
-    } catch (e) {
-      console.warn("job 폴링 실패:", e);
-    }
-  }, 1200);
-};
+    }, 1200);
+  };
 
   /* --------- startSimulation: run_async → job 폴링 → tail 폴링 --------- */
   const startSimulation = async () => {
@@ -516,7 +545,7 @@ const startJobPolling = (jobId) => {
     lastTurnRef.current = -1;
 
     addSystem(
-      `시뮬레이션 준비 완료\n시나리오: ${selectedScenario.name}\n피해자: ${selectedCharacter.name}`
+      `시뮬레이션 준비 완료\n시나리오: ${selectedScenario.name}\n피해자: ${selectedCharacter.name}`,
     );
 
     try {
@@ -529,7 +558,7 @@ const startJobPolling = (jobId) => {
       const kick = await runConversationAsync(
         selectedScenario.id,
         selectedCharacter.id,
-        payload
+        payload,
       );
 
       if (!kick || !kick.job_id) {
@@ -620,7 +649,9 @@ const startJobPolling = (jobId) => {
     dataError,
     currentCaseId, // 필요시 다른 컴포넌트에서 사용
     // ✅ 피해자 이미지 URL 추가
-    victimImageUrl: selectedCharacter ? getVictimImage(selectedCharacter.photo_path) : null,
+    victimImageUrl: selectedCharacter
+      ? getVictimImage(selectedCharacter.photo_path)
+      : null,
   };
 
   /* --------- 렌더 --------- */

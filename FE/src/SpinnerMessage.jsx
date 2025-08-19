@@ -2,11 +2,7 @@ import { useState, useEffect } from "react";
 
 const SpinnerMessage = ({ simulationState, COLORS }) => {
     const [messageIndex, setMessageIndex] = useState(0);
-<<<<<<< HEAD
-    
-=======
 
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
     const spinnerMessages = [
         "피싱범이 전략 회의 중...",
         "피해자가 전화를 받는 중...",
@@ -17,59 +13,36 @@ const SpinnerMessage = ({ simulationState, COLORS }) => {
         "대화 로그를 수집 중...",
         "피싱 기법을 분석 중...",
         "시뮬레이션 환경을 구축 중...",
-<<<<<<< HEAD
-        "AI 모델이 학습 데이터를 분석 중..."
-=======
-        "AI 모델이 학습 데이터를 분석 중...",
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
     ];
 
-    // 3초마다 메시지 변경 (시스템 메시지 추가하지 않음)
+    // 3초마다 메시지 변경
     useEffect(() => {
         if (simulationState === "PREPARE" || simulationState === "RUNNING") {
-            const interval = setInterval(() => {
-<<<<<<< HEAD
-                setMessageIndex(prev => (prev + 1) % spinnerMessages.length);
-            }, 3000);
-            
-=======
+            const id = setInterval(() => {
                 setMessageIndex((prev) => (prev + 1) % spinnerMessages.length);
             }, 3000);
-
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
-            return () => clearInterval(interval);
+            return () => clearInterval(id);
         }
     }, [simulationState]);
 
-    // 시뮬레이션이 실행 중이 아니면 스피너를 표시하지 않음
+    // 실행 중이 아니면 표시하지 않음
     if (simulationState !== "PREPARE" && simulationState !== "RUNNING") {
         return null;
     }
 
+    const borderColor = COLORS?.border ?? "#3F4147";
+    const subColor = COLORS?.sub ?? "#B5BAC1";
+
     return (
         <div className="flex justify-center py-8">
-<<<<<<< HEAD
-            <div 
-                className="bg-[#2B2D31] rounded-lg shadow-lg p-8 flex flex-col items-center justify-center border w-80 h-32" 
-=======
             <div
                 className="bg-[#2B2D31] rounded-lg shadow-lg p-8 flex flex-col items-center justify-center border w-80 h-32"
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
-                style={{ borderColor: COLORS.border }}
+                style={{ borderColor }}
+                role="status"
+                aria-live="polite"
             >
                 {/* 바 애니메이션 */}
                 <div className="flex space-x-1 mb-4">
-<<<<<<< HEAD
-                    <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0s'}}></div>
-                    <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.1s'}}></div>
-                    <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.2s'}}></div>
-                    <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.3s'}}></div>
-                    <div className="w-1 h-8 bg-[#5865F2] animate-pulse" style={{animationDelay: '0.4s'}}></div>
-                </div>
-                
-                {/* 메시지 */}
-                <p className="text-sm text-center" style={{ color: COLORS.sub }}>
-=======
                     <div
                         className="w-1 h-8 bg-[#5865F2] animate-pulse"
                         style={{ animationDelay: "0s" }}
@@ -93,11 +66,7 @@ const SpinnerMessage = ({ simulationState, COLORS }) => {
                 </div>
 
                 {/* 메시지 */}
-                <p
-                    className="text-sm text-center"
-                    style={{ color: COLORS.sub }}
-                >
->>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
+                <p className="text-sm text-center" style={{ color: subColor }}>
                     {spinnerMessages[messageIndex]}
                 </p>
             </div>
