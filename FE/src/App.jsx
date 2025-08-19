@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import LandingPage from "./LandingPage";
 import SimulatorPage from "./SimulatorPage";
 import ReportPage from "./ReportPage";
@@ -23,8 +23,8 @@ const COLORS = {
 /*
   ▶ API_BASE: 로컬백엔드 주소 (변경 금지: 로컬 개발시는 아래 상태 유지)
   ▶ API_PREFIX:
-     - 만약 FastAPI에서 include_router(router, prefix="/api")로 등록했다면 "/api"
-     - 라우터를 루트에 등록했다면 "" (빈 문자열)
+    - 만약 FastAPI에서 include_router(router, prefix="/api")로 등록했다면 "/api"
+    - 라우터를 루트에 등록했다면 "" (빈 문자열)
 */
 const API_BASE = "http://localhost:8000";
 const API_PREFIX = "/api"; // ← 필요하면 ""로 바꿔주세요
@@ -172,7 +172,11 @@ const App = () => {
   // ✅ Victims 이미지 동적 import 함수
   const getVictimImage = (photoPath) => {
     if (!photoPath) return null;
+<<<<<<< HEAD
     
+=======
+
+>>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
     try {
       // "/static/images/victims/2.png" -> "2.png" 추출
       const fileName = photoPath.split('/').pop();
