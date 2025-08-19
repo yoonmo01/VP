@@ -18,7 +18,12 @@ const LandingPage = ({ setCurrentPage }) => (
                 보이스피싱 시뮬레이션
             </h1>
             <p className="text-xl md:text-2xl text-gray-200 hakgyoansim-font">
+<<<<<<< HEAD
                 지역사회 피싱 범죄 예방을 위한 AI 에이전트 활용 연구 및 대응 방안 개발
+=======
+                지역사회 피싱 범죄 예방을 위한 AI 에이전트 활용 연구 및 대응
+                방안 개발
+>>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
             </p>
             <button
                 onClick={() => setCurrentPage("simulator")}

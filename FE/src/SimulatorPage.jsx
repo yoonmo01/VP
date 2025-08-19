@@ -10,7 +10,11 @@ import SpinnerMessage from "./SpinnerMessage";
 // Victims 이미지 동적 import 함수
 const getVictimImage = (photoPath) => {
     if (!photoPath) return null;
+<<<<<<< HEAD
     
+=======
+
+>>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
     try {
         // "/static/images/victims/2.png" -> "2.png" 추출
         const fileName = photoPath.split('/').pop();
@@ -206,7 +210,11 @@ const SimulatorPage = ({
                             {messages.map((m, index) => {
                                 const nm = normalizeMessage(m);
                                 const victimImageUrl = selectedCharacter ? getVictimImage(selectedCharacter.photo_path) : null;
+<<<<<<< HEAD
                                 
+=======
+
+>>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
                                 return (
                                     <MessageBubble
                                         key={index}

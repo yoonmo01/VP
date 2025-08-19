@@ -2,7 +2,11 @@ import React from 'react';
 
 const AIDisclaimerScroll = ({ COLORS }) => {
   const message = "본 콘텐츠는 AI 기술 시연을 위한 가상 시나리오입니다. 실제 범죄에 악용 시 형법 제347조(사기)에 의해 10년 이하 징역 또는 2천만원 이하 벌금에 처해질 수 있습니다. 범죄 예방 교육 목적으로만 사용해 주시기 바랍니다. ";
+<<<<<<< HEAD
   
+=======
+
+>>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
   return (
     <div className="flex items-center">
       {/* AI 디스클레임러 스크롤 */}
@@ -20,7 +24,11 @@ const AIDisclaimerScroll = ({ COLORS }) => {
           </span>
         </div>
       </div>
+<<<<<<< HEAD
       
+=======
+
+>>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
       <style jsx>{`
         @keyframes scroll {
           0% {
@@ -30,7 +38,11 @@ const AIDisclaimerScroll = ({ COLORS }) => {
             transform: translateX(-33.33%);
           }
         }
+<<<<<<< HEAD
         
+=======
+
+>>>>>>> 8aad0cf (replit 코드 <= 로컬 코드)
         .animate-scroll {
           display: inline-block;
           animation: scroll 45s linear infinite;
