@@ -169,6 +169,23 @@ const App = () => {
   // (기존) 인터벌 클린업용 ref (시뮬레이터 재생용)
   const simIntervalRef = useRef(null);
 
+  // ✅ Victims 이미지 동적 import 함수
+  const getVictimImage = (photoPath) => {
+    if (!photoPath) return null;
+    
+    try {
+      // "/static/images/victims/2.png" -> "2.png" 추출
+      const fileName = photoPath.split('/').pop();
+      if (fileName) {
+        // 동적 import로 assets/victims 폴더의 이미지 로드
+        return new URL(`./assets/victims/${fileName}`, import.meta.url).href;
+      }
+    } catch (error) {
+      console.warn('이미지 로드 실패:', error);
+    }
+    return null;
+  };
+
   /* --------- 메시지 추가 유틸 --------- */
   const addSystem = (content) =>
     setMessages((prev) => [
@@ -401,7 +418,7 @@ const App = () => {
       } catch (e) {
         console.warn("tail 폴링 실패:", e);
       }
-    }, 1200);
+    }, 3000);
   };
 
   // job 폴링 시작
@@ -517,7 +534,6 @@ const startJobPolling = (jobId) => {
         return;
       }
 
-      addSystem("시뮬레이션 실행 중... (실시간 로그 수집)");
       startJobPolling(kick.job_id);
     } catch (err) {
       console.error("시뮬레이션 실행 실패:", err);
@@ -599,6 +615,8 @@ const startJobPolling = (jobId) => {
     dataLoading,
     dataError,
     currentCaseId, // 필요시 다른 컴포넌트에서 사용
+    // ✅ 피해자 이미지 URL 추가
+    victimImageUrl: selectedCharacter ? getVictimImage(selectedCharacter.photo_path) : null,
   };
 
   /* --------- 렌더 --------- */

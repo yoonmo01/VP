@@ -5,6 +5,24 @@ import Badge from "./Badge";
 import SelectedCard from "./SelectedCard";
 import Chip from "./Chip";
 import MessageBubble from "./MessageBubble";
+import SpinnerMessage from "./SpinnerMessage";
+
+// Victims 이미지 동적 import 함수
+const getVictimImage = (photoPath) => {
+    if (!photoPath) return null;
+    
+    try {
+        // "/static/images/victims/2.png" -> "2.png" 추출
+        const fileName = photoPath.split('/').pop();
+        if (fileName) {
+            // 동적 import로 assets/victims 폴더의 이미지 로드
+            return new URL(`./assets/victims/${fileName}`, import.meta.url).href;
+        }
+    } catch (error) {
+        console.warn('이미지 로드 실패:', error);
+    }
+    return null;
+};
 
 const SimulatorPage = ({
     COLORS,
@@ -179,15 +197,23 @@ const SimulatorPage = ({
                             ref={scrollContainerRef}
                             className="h-full overflow-y-auto space-y-6"
                         >
+                            {/* 스피너 메시지 (로그가 없을 때만 표시) */}
+                            {!messages.some(m => m.type === "chat") && (
+                                <SpinnerMessage simulationState={simulationState} COLORS={COLORS} />
+                            )}
+
                             {/* ✅ CHANGED: message를 normalize 해서 MessageBubble로 전달 */}
                             {messages.map((m, index) => {
                                 const nm = normalizeMessage(m);
+                                const victimImageUrl = selectedCharacter ? getVictimImage(selectedCharacter.photo_path) : null;
+                                
                                 return (
                                     <MessageBubble
                                         key={index}
                                         // 기존 props
                                         message={nm}
                                         selectedCharacter={selectedCharacter}
+                                        victimImageUrl={victimImageUrl}
                                         COLORS={COLORS}
                                         // ✅ NEW: 명시적 전달 (MessageBubble이 이 필드들을 쓰도록)
                                         label={nm.label}
@@ -315,11 +341,11 @@ const SimulatorPage = ({
                                                     borderColor: COLORS.border,
                                                 }}
                                             >
-                                                {c.photo_path ? (
+                                                {getVictimImage(c.photo_path) ? (
                                                     <div
                                                         className="w-full h-44 bg-cover bg-center"
                                                         style={{
-                                                            backgroundImage: `url(${c.photo_path})`,
+                                                            backgroundImage: `url(${getVictimImage(c.photo_path)})`,
                                                         }}
                                                     />
                                                 ) : (
@@ -555,7 +581,7 @@ const SimulatorPage = ({
                 </div>
             </div>
 
-            {sessionResult && (
+            {sessionResult && progress >= 100 && (
                 <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50">
                     <div
                         className="px-8 py-4 rounded-xl"
