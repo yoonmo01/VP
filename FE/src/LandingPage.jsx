@@ -14,21 +14,22 @@ const LandingPage = ({ setCurrentPage }) => (
     >
         <div className="absolute inset-0 bg-black opacity-60" />
         <div className="relative z-10 text-center px-6">
-            <h1 className="text-5xl md:text-7xl font-extrabold text-white mb-6 hakgyoansim-outline-font">
+            <h1 className="text-5xl md:text-7xl lg:text-[88px] xl:text-[108px] font-extrabold text-white mb-6 pyeojin-font-bold leading-tight tracking-tight">
                 보이스피싱 시뮬레이션
             </h1>
-            <p className="text-xl md:text-2xl text-gray-200 hakgyoansim-font">
-                지역사회 피싱 범죄 예방을 위한 AI 에이전트 활용 연구 및 대응
-                방안 개발
+
+            <p className="text-lg md:text-xl lg:text-2xl text-gray-200 pyeojin-font leading-relaxed">
+                지역사회 피싱 범죄 예방을 위한 AI 에이전트 활용 연구 및 대응방안
+                개발
             </p>
             <button
                 onClick={() => setCurrentPage("simulator")}
                 className="
-            mt-12 px-10 py-4 rounded-2xl font-semibold text-lg
-            bg-[#5865F2] text-white shadow-lg
-            hover:bg-[#4752C4] hover:scale-105
-            transition-all duration-300
-            "
+                mt-12 px-10 py-4 rounded-2xl font-semibold text-xl bg-[#5865F2]
+                text-white shadow-lg
+                hover:bg-[#4752C4] hover:scale-105
+                transition-all duration-300
+                "
             >
                 <Play className="inline mr-3" size={22} />
                 시작하기

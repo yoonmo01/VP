@@ -101,7 +101,6 @@ async function runAgentForCaseAsync(
   const url = `${API_ROOT}/agent/run_async/${encodeURIComponent(caseId)}?verbose=${verbose ? "true" : "false"}`;
   return fetchWithTimeout(url, {
     method: "POST",
-    headers: { "X-Verbose": String(verbose) },
     timeout,
   });
 }
@@ -144,6 +143,69 @@ function filterLogsByAgentFlag(logs = [], { forAgent = false } = {}) {
   } else {
     return logs.filter((l) => !isUseAgentTrue(l));
   }
+}
+
+// === 요약 박스 컴포넌트 (미리보기 preview를 그대로 표시) ======================
+function mapOutcomeToKorean(outcome) {
+  switch (outcome) {
+    case "attacker_fail":
+      return "공격자 실패";
+    case "attacker_success":
+      return "공격자 성공";
+    case "inconclusive":
+      return "판단 불가";
+    default:
+      return outcome || "-";
+  }
+}
+function toArrayReasons(reason, reasons) {
+  if (Array.isArray(reasons) && reasons.length) return reasons;
+  if (Array.isArray(reason)) return reason;
+  if (typeof reason === "string" && reason.trim()) return [reason];
+  return [];
+}
+
+function InlinePhishingSummaryBox({ preview }) {
+  if (!preview) return null;
+  const outcome = mapOutcomeToKorean(preview.outcome);
+  const reasons = toArrayReasons(preview.reason, preview.reasons);
+  const guidanceTitle = preview?.guidance?.title || "-";
+
+  return (
+    <div className="max-w-3xl mx-auto my-4">
+      <div className="rounded-2xl border border-gray-200 bg-white/60 shadow-sm backdrop-blur p-4 md:p-5">
+        <h3 className="text-base md:text-lg font-semibold mb-3">
+          요약(대화 1 분석)
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <div className="text-xs text-gray-500 mb-1">피싱여부</div>
+            <div className="text-sm md:text-base text-gray-900">{outcome}</div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500 mb-1">적용 지침</div>
+            <div className="text-sm md:text-base text-gray-900 line-clamp-2">
+              {guidanceTitle}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500 mb-1">피싱여부 근거</div>
+            {reasons.length === 0 ? (
+              <div className="text-sm text-gray-500">-</div>
+            ) : (
+              <ul className="list-disc pl-5 space-y-1">
+                {reasons.map((r, i) => (
+                  <li key={i} className="text-sm leading-6">
+                    {r}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ================== App 컴포넌트 ================== */
@@ -285,7 +347,7 @@ const App = () => {
   /* playLogs: append 옵션 + onComplete 콜백 지원 */
   const playLogs = (
     logs = [],
-    { append = false, speed = 700 } = {},
+    { append = false, speed = 1500 } = {},
     onComplete = null,
   ) => {
     if (!Array.isArray(logs) || logs.length === 0) {
@@ -572,27 +634,25 @@ const App = () => {
         const st = await getAgentJobStatus(jobId);
         if (!st) return null;
 
-        // ✅ 미리보기(preview) 즉시 노출: 프런트에서 대화 추가 전 먼저 보여줌
-        if (st.preview && !agentPreviewShown) {
-          try {
-            const p = st.preview;
-            // 동일한 "시스템" 박스 스타일로 표시
-            addSystem(
-              [
-                "🔎 에이전트 사전 판정(미리보기)",
-                `- 피싱 여부: ${p.phishing ? "성공(공격자 우세)" : "실패(피해자 우세)"}`,
-                p.reasons?.length
-                  ? `- 이유: ${p.reasons.slice(0, 3).join(" / ")}`
-                  : "",
-                p.guidance?.title ? `- 지침: ${p.guidance.title}` : "",
-              ]
-                .filter(Boolean)
-                .join("\n"),
-            );
-            // 리포트에서도 쓰도록 상태 저장
-            setSessionResult((prev) => ({ ...(prev || {}), preview: p }));
-            setAgentPreviewShown(true);
-          } catch {}
+        // ✅ result.preview 우선, 없으면 st.preview (서버 래핑 차이 흡수)
+        const preview = st?.result?.preview ?? st?.preview ?? null;
+        if (preview && !agentPreviewShown) {
+          addSystem(
+            [
+              "🔎 에이전트 사전 판정(미리보기)",
+              `- 피싱 여부: ${preview.phishing ? "성공(공격자 우세)" : "실패(피해자 우세)"}`,
+              Array.isArray(preview.reasons) && preview.reasons.length
+                ? `- 이유: ${preview.reasons.slice(0, 3).join(" / ")}`
+                : "",
+              preview.guidance?.title
+                ? `- 지침: ${preview.guidance.title}`
+                : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
+          setSessionResult((prev) => ({ ...(prev || {}), preview }));
+          setAgentPreviewShown(true);
         }
 
         if (st.status === "error")
@@ -656,7 +716,7 @@ const App = () => {
         return;
       }
 
-      playLogs(agentOnlyLogs, { append: true, speed: 700 }, () => {
+      playLogs(agentOnlyLogs, { append: true, speed: 1500 }, () => {
         setHasAgentRun(true);
         setAgentRunning(false);
         setShowReportPrompt(true);

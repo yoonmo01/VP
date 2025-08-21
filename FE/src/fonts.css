@@ -74,6 +74,41 @@
 }
 
 
+
+@font-face {
+    font-family: 'RixYeoljeongdo_Regular';
+    src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/noonfonts_2102-01@1.0/RixYeoljeongdo_Regular.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: 'PFStardustS';
+    src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2506-1@1.0/PFStardustS.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: 'PyeojinGothic-Bold';
+    src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/2504-1@1.0/PyeojinGothic-Bold.woff2') format('woff2');
+    font-weight: 700;
+    font-style: normal;
+}
+
+.pyeojin-font{
+    font-family:PyeojinGothic-Bold
+}
+
+.pfstardust-font{
+    font-family: PFStardustS
+}
+
+.rixyeoljeongdo-font{
+    font-family: 'RixYeoljeongdo_Regular', sans-serif;
+}
+
+
 .iyagi-font {
 
     font-family: 'IyagiGGC', sans-serif;
