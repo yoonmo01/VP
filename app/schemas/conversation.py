@@ -20,6 +20,14 @@ class ConversationRunBody(BaseModel):
     agent_mode: Literal["off", "admin", "police"] = "off"
     case_scenario: Optional[Dict[str, Any]] = None
 
+    @property
+    def max_rounds(self) -> int:
+        return self.max_turns
+
+    @property
+    def scenario(self) -> Dict[str, Any] | None:
+        return self.case_scenario
+
 
 # 🔹 내부 실행용 요청 모델: Path ID + Body 병합 후 사용
 class ConversationRunRequest(BaseModel):
@@ -29,6 +37,14 @@ class ConversationRunRequest(BaseModel):
     max_turns: int = 30
     agent_mode: Literal["off", "admin", "police"] = "off"
     case_scenario: Optional[Dict[str, Any]] = None
+
+    @property
+    def max_rounds(self) -> int:
+        return self.max_turns
+
+    @property
+    def scenario(self) -> Dict[str, Any] | None:
+        return self.case_scenario
 
 
 class ConversationRunResult(BaseModel):
