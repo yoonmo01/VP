@@ -103,11 +103,11 @@ def fetch_df(db: Session, sql: str) -> pd.DataFrame:
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-# 한글/영문 통일 폰트(중간사이즈)
-BASE_FONT = ("Malgun Gothic", 9)   # 본문(표)
-HEAD_FONT = ("Malgun Gothic", 9)   # 헤더
+# 한글/영문 통일 폰트(중간 이하 사이즈)
+BASE_FONT  = ("Malgun Gothic", 9)   # 표 본문
+HEAD_FONT  = ("Malgun Gothic", 9)   # 표 헤더
 TITLE_FONT = ("Malgun Gothic", 11)  # 상단 타이틀
-SUB_FONT = ("Malgun Gothic", 8)    # 서브 설명
+SUB_FONT   = ("Malgun Gothic", 8)   # 서브 설명
 
 KOR_COLUMNS_FULL = {
     "age_group": "나이대",
@@ -116,7 +116,6 @@ KOR_COLUMNS_FULL = {
     "phishing_cases": "피싱 발생 건수",
     "phishing_rate_pct": "피싱율(%)",
 }
-
 KOR_COLUMNS_AGE_ONLY = {
     "age_group": "나이대",
     "total_cases": "총 건수",
@@ -157,7 +156,9 @@ def _make_treeview(frame: ttk.Frame, df: pd.DataFrame) -> ttk.Treeview:
         width_px = min(max(100, int(max_len * 10)), 480)
         tree.column(col, width=width_px, anchor="center", stretch=True)
 
-    # 지브라 스트라이프 태그 지정
+    # 지브라 스트라이프(태그 색 직접 지정)
+    tree.tag_configure("evenrow", background="#F7F9FC")
+    tree.tag_configure("oddrow",  background="#EEF2F7")
     for i, (_, row) in enumerate(df.iterrows()):
         tags = ("oddrow",) if i % 2 else ("evenrow",)
         tree.insert("", "end", values=[row.get(c, "") for c in df.columns], tags=tags)
@@ -172,7 +173,6 @@ def _make_treeview(frame: ttk.Frame, df: pd.DataFrame) -> ttk.Treeview:
         for idx, (_, k) in enumerate(data):
             tree.move(k, "", idx)
         tree.heading(col, command=lambda: sort_by(col, not reverse))
-
     for c in df.columns:
         tree.heading(c, command=lambda cc=c: sort_by(cc, False))
 
@@ -185,7 +185,6 @@ def _apply_style(root: tk.Tk):
     except tk.TclError:
         pass
 
-    # 통일 폰트/색상
     style.configure(
         "Treeview",
         font=BASE_FONT,
@@ -205,10 +204,6 @@ def _apply_style(root: tk.Tk):
               background=[("selected", "#4C6EF5")],
               foreground=[("selected", "white")])
 
-    # 지브라 행 배경
-    style.configure("evenrow", background="#F7F9FC")
-    style.configure("oddrow", background="#EEF2F7")
-
 def show_results_in_window(df_age_method: pd.DataFrame,
                            df_age_only: pd.DataFrame,
                            df_topn: pd.DataFrame):
@@ -221,59 +216,55 @@ def show_results_in_window(df_age_method: pd.DataFrame,
     # 상단 헤더바
     header = ttk.Frame(root)
     header.pack(fill="x", padx=12, pady=(12, 6))
-    title_lbl = ttk.Label(header, text="나이대별 피싱 취약도 통계", font=TITLE_FONT)
-    sub_lbl = ttk.Label(
+    ttk.Label(header, text="나이대별 피싱 취약도 통계", font=TITLE_FONT).pack(anchor="w")
+    ttk.Label(
         header,
         text="연령대별 전체·수법별 통계와 Top-3 취약 수법을 한 눈에 확인하세요.",
         font=SUB_FONT
-    )
-    title_lbl.pack(anchor="w")
-    sub_lbl.pack(anchor="w")
+    ).pack(anchor="w")
 
     # 노트북 탭
     notebook = ttk.Notebook(root)
     notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-    # ── 탭 1: 나이대 × 수법별 ────────────────────────────────────────────────
-    frame1 = ttk.Frame(notebook)
-    notebook.add(frame1, text="나이대 × 수법별 피싱율")
-
+    # ── 탭 1: 나이대 × 수법별
+    frame1 = ttk.Frame(notebook); notebook.add(frame1, text="나이대 × 수법별 피싱율")
     if not df_age_method.empty:
-        df1 = _rename_columns(df_age_method, KOR_COLUMNS_FULL)
-        _make_treeview(frame1, df1)
+        _make_treeview(frame1, _rename_columns(df_age_method, KOR_COLUMNS_FULL))
     else:
         ttk.Label(frame1, text="데이터가 없습니다.", font=BASE_FONT).pack(pady=20)
 
-    # ── 탭 2: 나이대 전체 ───────────────────────────────────────────────────
-    frame2 = ttk.Frame(notebook)
-    notebook.add(frame2, text="나이대 전체 피싱율")
-
+    # ── 탭 2: 나이대 전체
+    frame2 = ttk.Frame(notebook); notebook.add(frame2, text="나이대 전체 피싱율")
     if not df_age_only.empty:
-        df2 = _rename_columns(df_age_only, KOR_COLUMNS_AGE_ONLY)
-        _make_treeview(frame2, df2)
+        _make_treeview(frame2, _rename_columns(df_age_only, KOR_COLUMNS_AGE_ONLY))
     else:
         ttk.Label(frame2, text="데이터가 없습니다.", font=BASE_FONT).pack(pady=20)
 
-    # ── 탭 3: 나이대별 Top-3 취약 수법 ───────────────────────────────────────
-    frame3_outer = ttk.Frame(notebook)
-    notebook.add(frame3_outer, text="나이대별 Top-3 취약 수법")
-
-    top_bar = ttk.Frame(frame3_outer)
-    top_bar.pack(fill="x", padx=8, pady=(8, 4))
-    ttk.Label(
-        top_bar,
-        text="나이대별 Top-3 취약 수법",
-        font=HEAD_FONT
-    ).pack(side="left")
-
-    frame3 = ttk.Frame(frame3_outer, borderwidth=0)
-    frame3.pack(fill="both", expand=True)
-
+    # ── 탭 3: 나이대별 Top-3 취약 수법(전체 컬럼)
+    frame3_outer = ttk.Frame(notebook); notebook.add(frame3_outer, text="나이대별 Top-3 취약 수법")
+    ttk.Label(frame3_outer, text="나이대별 Top-3 취약 수법", font=HEAD_FONT)\
+        .pack(anchor="w", padx=8, pady=(8, 4))
+    frame3 = ttk.Frame(frame3_outer); frame3.pack(fill="both", expand=True)
     if not df_topn.empty:
-        df3 = _rename_columns(df_topn, KOR_COLUMNS_FULL)
-        _make_treeview(frame3, df3)
+        _make_treeview(frame3, _rename_columns(df_topn, KOR_COLUMNS_FULL))
     else:
         ttk.Label(frame3, text="데이터가 없습니다.", font=BASE_FONT).pack(pady=20)
+
+    # ── 탭 4: 60대 Top-3 취약 수법(전체 컬럼)
+    frame4_outer = ttk.Frame(notebook); notebook.add(frame4_outer, text="60대 Top-3 취약 수법")
+    ttk.Label(frame4_outer, text="60대 Top-3 취약 수법", font=HEAD_FONT)\
+        .pack(anchor="w", padx=8, pady=(8, 4))
+    frame4 = ttk.Frame(frame4_outer); frame4.pack(fill="both", expand=True)
+
+    if not df_topn.empty:
+        df60 = df_topn[df_topn["age_group"] == "60대"].copy()
+        if df60.empty:
+            ttk.Label(frame4, text="60대 데이터가 없습니다.", font=BASE_FONT).pack(pady=20)
+        else:
+            _make_treeview(frame4, _rename_columns(df60, KOR_COLUMNS_FULL))
+    else:
+        ttk.Label(frame4, text="데이터가 없습니다.", font=BASE_FONT).pack(pady=20)
 
     root.mainloop()
 
@@ -283,7 +274,6 @@ def main() -> None:
     print("현재 연결된 DB URL:", str(engine.url))
     try:
         conv_table = pick_conversation_table(db)
-
         sql_age_method = SQL_AGE_METHOD_TMPL.format(conv_table=conv_table)
         sql_age_only   = SQL_AGE_ONLY_TMPL.format(conv_table=conv_table)
 
@@ -304,7 +294,6 @@ def main() -> None:
         else:
             df_topn = pd.DataFrame()
 
-        # GUI 표시
         show_results_in_window(df_age_method, df_age_only, df_topn)
 
     except Exception as e:
