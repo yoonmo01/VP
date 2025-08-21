@@ -2,117 +2,131 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"     # .../VP
+SETUP_DIR="$ROOT_DIR/.setup"
 VENV_DIR="$ROOT_DIR/../.venv"
 FE_DIR="$ROOT_DIR/FE"
 
-echo "[INFO] Shell    : $SHELL"
-echo "[INFO] Workdir  : $ROOT_DIR"
-echo "[INFO] Venv path: $VENV_DIR"
+mkdir -p "$SETUP_DIR"
 
-# ── 1) 시스템 파이썬 찾기 ─────────────────────────────────────────
+API_PORT=${API_PORT:-8000}
+FE_PORT=${FE_PORT:-5173}
+RUN_INSTALL=false
+RUN_SEED=true
+
+# ---- args ----
+for arg in "$@"; do
+  case "$arg" in
+    --install) RUN_INSTALL=true ;;
+    --no-seed) RUN_SEED=false ;;
+  esac
+done
+
+echo "[INFO] Workdir : $ROOT_DIR"
+echo "[INFO] Venv    : $VENV_DIR"
+
+# ---- 1) pick system python ----
 SYS_PY=""
-if command -v python >/dev/null 2>&1; then
-  SYS_PY="python"
-elif command -v python3 >/dev/null 2>&1; then
-  SYS_PY="python3"
-elif command -v py >/dev/null 2>&1; then
-  SYS_PY="py -3"
-fi
-if [[ -z "$SYS_PY" ]]; then
-  echo "[ERROR] python 실행 파일을 찾을 수 없습니다." >&2
-  exit 1
-fi
-echo "[INFO] Using Python launcher: $SYS_PY"
+if command -v python >/dev/null 2>&1; then SYS_PY="python"
+elif command -v python3 >/dev/null 2>&1; then SYS_PY="python3"
+elif command -v py >/dev/null 2>&1; then SYS_PY="py -3"; fi
+if [[ -z "$SYS_PY" ]]; then echo "[ERROR] python not found"; exit 1; fi
 
-# ── 2) venv 생성/결정 ─────────────────────────────────────────────
+# ---- 2) ensure venv ----
 PY=""
 if [[ -x "$VENV_DIR/bin/python" ]]; then
   PY="$VENV_DIR/bin/python"
 elif [[ -x "$VENV_DIR/Scripts/python.exe" ]]; then
   PY="$VENV_DIR/Scripts/python.exe"
 else
-  echo "[SETUP] Creating venv: $VENV_DIR"
-  $SYS_PY -m venv "$VENV_DIR"
-  # 실패 시 Windows 런처로 재시도
-  if [[ ! -x "$VENV_DIR/bin/python" && ! -x "$VENV_DIR/Scripts/python.exe" ]]; then
-    if command -v py >/dev/null 2>&1; then
-      py -3 -m venv "$VENV_DIR"
+  echo "[SETUP] Creating venv at $VENV_DIR"
+  $SYS_PY -m venv "$VENV_DIR" || { command -v py >/dev/null 2>&1 && py -3 -m venv "$VENV_DIR" || true; }
+  if [[ -x "$VENV_DIR/bin/python" ]]; then PY="$VENV_DIR/bin/python"
+  elif [[ -x "$VENV_DIR/Scripts/python.exe" ]]; then PY="$VENV_DIR/Scripts/python.exe"
+  else echo "[ERROR] venv python not found"; exit 1; fi
+fi
+echo "[INFO] Python : $("$PY" -V 2>&1)"
+
+# ---- 3) backend deps (install on first run or if changed) ----
+REQ="$ROOT_DIR/requirements.txt"
+REQ_SNAP="$SETUP_DIR/requirements.snapshot"
+NEED_PIP=false
+if $RUN_INSTALL; then
+  NEED_PIP=true
+elif [[ ! -f "$REQ_SNAP" ]]; then
+  NEED_PIP=true
+elif [[ -f "$REQ" ]] && ! cmp -s "$REQ" "$REQ_SNAP"; then
+  NEED_PIP=true
+fi
+
+if $NEED_PIP; then
+  if [[ -f "$REQ" ]]; then
+    echo "[SETUP] Installing backend deps from requirements.txt ..."
+    # pip가 깨져있을 수 있어 ensurepip로 복구
+    if ! "$PY" -m pip --version >/dev/null 2>&1; then
+      "$PY" -m ensurepip --upgrade
+      "$PY" -m pip install --upgrade --force-reinstall --no-cache-dir pip setuptools wheel
     fi
-  fi
-  if [[ -x "$VENV_DIR/bin/python" ]]; then
-    PY="$VENV_DIR/bin/python"
-  elif [[ -x "$VENV_DIR/Scripts/python.exe" ]]; then
-    PY="$VENV_DIR/Scripts/python.exe"
+    "$PY" -m pip install -r "$REQ" --no-cache-dir --disable-pip-version-check
+    cp "$REQ" "$REQ_SNAP"
   else
-    echo "[ERROR] venv 파이썬을 찾을 수 없습니다: $VENV_DIR" >&2
-    exit 1
+    echo "[WARN] requirements.txt not found. Skipping backend install."
   fi
-fi
-echo "[INFO] Venv Python: $PY"
-"$PY" -V
-
-# ── 3) 백엔드 의존성 설치 ────────────────────────────────────────
-REQ_TXT=""
-if [[ -f "$ROOT_DIR/requirements.txt" ]]; then
-  REQ_TXT="$ROOT_DIR/requirements.txt"
-elif [[ -f "$ROOT_DIR/requirment.txt" ]]; then
-  REQ_TXT="$ROOT_DIR/requirment.txt"   # 오타 파일명도 지원
-fi
-
-if [[ -n "$REQ_TXT" ]]; then
-  echo "[SETUP] Upgrade pip & install deps: $REQ_TXT"
-  "$PY" -m pip install -U pip
-  "$PY" -m pip install -r "$REQ_TXT"
 else
-  echo "[WARN] requirements.txt(또는 requirment.txt)가 없어 설치를 건너뜁니다."
+  echo "[SKIP] Backend deps up-to-date."
 fi
 
-# ── 4) 프론트 의존성 설치 ────────────────────────────────────────
+# ---- 4) frontend deps (install on first run or if changed) ----
+PKG_LOCK="$FE_DIR/package-lock.json"
+PKG_SNAP="$SETUP_DIR/package-lock.snapshot"
+NEED_NPM=false
+if $RUN_INSTALL; then
+  NEED_NPM=true
+elif [[ ! -d "$FE_DIR/node_modules" ]]; then
+  NEED_NPM=true
+elif [[ -f "$PKG_LOCK" ]] && { [[ ! -f "$PKG_SNAP" ]] || ! cmp -s "$PKG_LOCK" "$PKG_SNAP"; }; then
+  NEED_NPM=true
+fi
+
 if ! command -v npm >/dev/null 2>&1; then
-  echo "[ERROR] npm 이 필요합니다. Node.js 설치 후 다시 실행하세요." >&2
+  echo "[ERROR] npm is required. Install Node.js first (https://nodejs.org/)."
   exit 1
 fi
 
-pushd "$FE_DIR" >/dev/null
-if [[ -d "node_modules" ]]; then
-  echo "[SETUP] node_modules 존재 → 설치 건너뜀"
+if $NEED_NPM; then
+  echo "[SETUP] Installing frontend deps ..."
+  pushd "$FE_DIR" >/dev/null
+  if [[ -f "package-lock.json" ]]; then npm ci; else npm install; fi
+  popd >/dev/null
+  [[ -f "$PKG_LOCK" ]] && cp "$PKG_LOCK" "$PKG_SNAP" || true
 else
-  if [[ -f "package-lock.json" ]]; then
-    echo "[SETUP] npm ci"
-    npm ci
-  else
-    echo "[SETUP] npm install"
-    npm install
-  fi
+  echo "[SKIP] Frontend deps up-to-date."
 fi
-popd >/dev/null
 
-# ── 5) SEED (DB 테이블 생성/시드) ────────────────────────────────
-echo "[SEED] python -m app.db.seed"
-"$PY" -m app.db.seed
+# ---- 5) seed (idempotent recommended) ----
+if $RUN_SEED; then
+  echo "[SEED] Running: python -m seed"
+  "$PY" -m seed
+else
+  echo "[SKIP] Seed step skipped (--no-seed)."
+fi
 
-# ── 6) 서버 실행 (백엔드 & 프론트) ───────────────────────────────
-API_PORT=${API_PORT:-8000}
-FE_PORT=${FE_PORT:-5173}
+# ---- 6) run servers ----
+echo "[RUN] Backend docs  → http://localhost:${API_PORT}/docs"
+echo "[RUN] Frontend → http://localhost:${FE_PORT}/"
+echo "------------------------------------------------------------"
 
-echo "[RUN] Starting backend (uvicorn) ..."
+# backend
 pushd "$ROOT_DIR" >/dev/null
-"$PY" -m uvicorn app.main:app --reload --host 0.0.0.0 --port "$API_PORT" &
+"$PY" -m uvicorn app.main:app --reload --port "$API_PORT" &
 BACK_PID=$!
 popd >/dev/null
 
-echo "[RUN] Starting frontend (Vite) ..."
+# frontend
 pushd "$FE_DIR" >/dev/null
 npm run dev -- --port "$FE_PORT" &
 FRONT_PID=$!
 popd >/dev/null
 
-trap 'echo; echo "[STOP] 종료 중..."; kill $BACK_PID $FRONT_PID 2>/dev/null || true; wait $BACK_PID $FRONT_PID 2>/dev/null || true; echo "[STOP] 종료 완료";' INT TERM
-
-echo "------------------------------------------------------------"
-echo "API     → http://localhost:${API_PORT}/docs"
-echo "Frontend→ http://localhost:${FE_PORT}/"
-echo "Ctrl+C 로 종료합니다."
-echo "------------------------------------------------------------"
+trap 'echo; echo "[STOP] shutting down..."; kill $BACK_PID $FRONT_PID 2>/dev/null || true; wait $BACK_PID $FRONT_PID 2>/dev/null || true; echo "[STOP] done";' INT TERM
 
 wait
