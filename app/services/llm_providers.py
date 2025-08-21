@@ -19,20 +19,19 @@ def openai_chat(model: Optional[str] = None, temperature: float = 0.7):
             model=mdl,
             temperature=1,  # ← 이것이 핵심
             api_key=settings.OPENAI_API_KEY,
-        )
+            timeout=6000)
     else:
-        return ChatOpenAI(
-            model=mdl,
-            temperature=temperature,
-            api_key=settings.OPENAI_API_KEY,
-        )
+        return ChatOpenAI(model=mdl,
+                          temperature=temperature,
+                          api_key=settings.OPENAI_API_KEY,
+                          timeout=600000)
 
 
 def agent_chat():
     return ChatOpenAI(
-        model=getattr(settings, "AGENT_MODEL", "gpt-o4-mini"),
-        temperature=0.2,
-        timeout=60,
+        model=getattr(settings, "AGENT_MODEL", "o4-mini"),
+        temperature=1,
+        timeout=600000,
     )
 
 
@@ -43,6 +42,7 @@ def gemini_chat(model: Optional[str] = None, temperature: float = 0.7):
         model=model or "gemini-2.5-flash-lite",
         google_api_key=settings.GOOGLE_API_KEY,
         temperature=temperature,
+        timeout=600000,
     )
 
 
