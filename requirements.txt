@@ -38,5 +38,5 @@ alembic==1.13.2
 langchain==0.2.12
 langchain-core==0.2.32
 langchain-openai==0.1.21
-langchain-google-genai==0.0.10
+langchain-google-genai==1.0.9
 pandas==2.3.1
