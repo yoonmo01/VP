@@ -58,7 +58,6 @@ ATTACKER_PROMPT = ChatPromptTemplate.from_messages([
      (E) 최근 **2턴 연속** 의미 있는 진전 없음(동일한 거절/의심/회피가 반복되어 설득 시도가 **무의미**하다고 판단)
 
      [현재 단계]
-     [현재 단계]
      {current_step}
 
      [지침(있으면 반드시 반영)]

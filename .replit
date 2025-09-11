@@ -8,11 +8,17 @@ run = "bash -lc 'uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 channel = "stable-25_05"
 packages = ["bash", "glibcLocales", "libxcrypt"]
 
-# 🔓 외부 포트 2개 모두 공개
 [[ports]]
 localPort = 5173
-externalPort = 5173 # 프론트 미리보기용
+externalPort = 5173
+
+[[ports]]
+localPort = 5174
+externalPort = 3000
 
 [[ports]]
 localPort = 8000
-externalPort = 80 # 백엔드(/docs) 전용. (80이 막히면 8000으로 바꿔도 됨)
+externalPort = 80
+
+[agent]
+expertMode = true

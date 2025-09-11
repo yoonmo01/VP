@@ -1,3 +1,25 @@
+# # Core
+# fastapi==0.111.0
+# uvicorn[standard]==0.30.0
+
+# # Config & Validation
+# pydantic==2.8.2
+# pydantic-settings==2.4.0
+# python-dotenv==1.0.1
+
+# # Database
+# SQLAlchemy==2.0.31
+# psycopg2-binary==2.9.9
+# alembic==1.13.2
+
+# # LLM / Agents
+# langchain==0.2.12
+# langchain-core==0.2.32
+# langchain-openai==0.1.21
+# langchain-google-genai==1.0.6
+# pandas==2.3.1
+
+
 # Core
 fastapi==0.111.0
 uvicorn[standard]==0.30.0
@@ -16,5 +38,5 @@ alembic==1.13.2
 langchain==0.2.12
 langchain-core==0.2.32
 langchain-openai==0.1.21
-langchain-google-genai==1.0.6
+langchain-google-genai==0.0.10
 pandas==2.3.1
