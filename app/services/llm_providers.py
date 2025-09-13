@@ -51,9 +51,13 @@ def agent_chat(model: str | None = None, temperature: float = 0.2):
     }
     name = alias_map.get(name, name)
 
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not set")
+
     return ChatOpenAI(
         model=name,
         temperature=temperature,  # ReAct는 0~0.3 권장
+        api_key = settings.OPENAI_API_KEY,
         timeout=600000,
     )
 
