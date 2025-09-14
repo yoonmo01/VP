@@ -7,6 +7,7 @@ import SelectedCard from "./SelectedCard";
 import Chip from "./Chip";
 import MessageBubble from "./MessageBubble";
 import SpinnerMessage from "./SpinnerMessage";
+import CustomCharacterCreate from "./CustomCharacterCreate";
 
 const getVictimImage = (photoPath) => {
   if (!photoPath) return null;
@@ -459,6 +460,17 @@ const SimulatorPage = ({
                   className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 flex-1 min-h-0 overflow-y-auto pr-1"
                   style={{ maxHeight: "100%" }}
                 >
+                  {/* 커스텀 캐릭터 만들기 (저장하면 즉시 선택 + 미리보기 표시) */}
+                  <CustomCharacterCreate
+                    theme={THEME}
+                    onCreated={(createdVictim) => {
+                      setSelectedCharacter(createdVictim);               // 바로 선택
+                      addSystem(`커스텀 캐릭터 저장 및 선택: ${createdVictim.name}`);
+                      // 필요 시 목록에도 추가하고 싶다면(선택):
+                      // setCharacters?.((prev) => [createdVictim, ...prev]);
+                    }}
+                  />
+
                   {characters.map((c) => (
                     <button key={c.id} onClick={() => setSelectedCharacter(c)}>
                       <div
