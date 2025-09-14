@@ -191,11 +191,16 @@ def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
         vul = [str(x) for x in vul][:6]
 
         cont = d.get("continue") or {}
-        rec  = cont.get("recommendation")
-        if rec not in {"continue", "stop"}:
-            # 기본값: 위험도 높으면 stop, 아니면 continue
-            rec = "stop" if score >= 75 or phishing else "continue"
-        reason = str(cont.get("reason", ""))
+        rec_raw  = cont.get("recommendation")
+        reason   = str(cont.get("reason", ""))
+        
+        rec = "stop" if level == "critical" else "continue"
+        if not reason:
+            reason = (
+                "위험도가 critical로 판정되어 시나리오를 종료합니다."
+                if rec == "stop"
+                else "위험도가 critical이 아니므로 수법 고도화/추가 라운드 진행을 권고합니다."
+            )
 
         return {
             "phishing": phishing,

@@ -238,7 +238,7 @@ def build_agent_and_tools(db: Session, use_tavily: bool) -> Tuple[AgentExecutor,
                 "아래 포맷을 정확히 따르세요. 포맷 외 임의 텍스트/코드펜스/주석 금지.\n"
                 "Thought: 한 줄\n"
                 "Action: 도구이름  (예: mcp.simulator_run)\n"
-                "Action Input: {{\"data\": {{...}}}}  # JSON 한 줄, 최상위 'data'\n"
+                "Action Input: {{\"data\": {{...}}}}  \n"
                 "Observation: (도구 출력)\n"
                 "... 반복 ...\n"
                 "Final Answer: 결론\n\n"

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from app.db import models as m
 
-import json, ast, re
+import json, ast
 
 from app.core.logging import get_logger
 from app.services.admin_summary import (
@@ -232,6 +232,34 @@ def make_admin_tools(db: Session, guideline_repo):
             raise HTTPException(status_code=422, detail=f"JudgeMakeInput 검증 실패: {e}")
 
         verdict = summarize_run_full(db, ji.case_id, ji.run_no)
+
+        # ── 정책 오버라이드: critical일 때만 stop, 그 외는 continue ──
+        risk = verdict.get("risk") or {}
+        # score 정규화
+        score = int(risk.get("score", 0) or 0)
+        if score < 0: score = 0
+        if score > 100: score = 100
+        risk["score"] = score
+
+        level = str((risk.get("level") or "")).lower()
+        if level not in {"low", "medium", "high", "critical"}:
+            level = ("critical" if score >= 75 else
+                     "high"     if score >= 50 else
+                     "medium"   if score >= 25 else
+                     "low")
+        risk["level"] = level
+        verdict["risk"] = risk
+
+        rec = "stop" if level == "critical" else "continue"
+        cont = verdict.get("continue") or {}
+        reason = cont.get("reason") or (
+            "위험도가 critical로 판정되어 시나리오를 종료합니다."
+            if rec == "stop" else
+            "위험도가 critical이 아니므로 수법 고도화/추가 라운드를 권고합니다."
+        )
+        verdict["continue"] = {"recommendation": rec, "reason": reason}
+        # ───────────────────────────────────────────────
+
         persisted = _persist_verdict(db, case_id=ji.case_id, run_no=ji.run_no, verdict=verdict)
 
         # 결과 그대로 반환
