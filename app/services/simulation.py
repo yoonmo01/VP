@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from app.services.llm_providers import attacker_chat, victim_chat
 from app.services.admin_summary import summarize_case
 
+# 기본 템플릿
 from app.services.prompts import (
     ATTACKER_PROMPT,
     VICTIM_PROMPT,
@@ -83,6 +84,19 @@ def _hit_end(text: str) -> bool:
     return any(re.search(pat, norm) for pat in END_TRIGGERS)
 
 
+# ─────────────────────────────────────────────────────────
+# ⬇️ 추가: 템플릿 리졸버 (템플릿 ID → 실제 ChatPromptTemplate)
+#    필요 시 prompt.py에 다른 버전을 추가해도 여기 맵만 확장하면 됨.
+# ─────────────────────────────────────────────────────────
+def _resolve_attacker_prompt(template_id: str | None):
+    # 예: "ATTACKER_PROMPT_V1" 같은 문자열이 들어오면 분기
+    # 현재는 단일 버전만 있으므로 기본값으로 매핑
+    return ATTACKER_PROMPT
+
+def _resolve_victim_prompt(template_id: str | None):
+    return VICTIM_PROMPT
+
+
 def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UUID, int]:
     """
     시뮬레이터 메인.
@@ -120,15 +134,39 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
     # ── 메타 표식 ──────────────────────────────────────
     run_no: int = int(getattr(req, "run_no", 1))
     use_agent: bool = bool(getattr(req, "use_agent", False))
+
+    # ⬇️ guidance 주입 (우선순위: req.guidance > req.guideline > case_scenario.guideline)
     cs: Dict[str, Any] = getattr(req, "case_scenario", {}) or {}
-    guidance_text: str | None = getattr(req, "guideline", None) or cs.get("guideline")
-    guidance_type: str | None = getattr(req, "guidance_type", None) or cs.get("guidance_type")
+    guidance_dict: Dict[str, Any] | None = getattr(req, "guidance", None)
+    guidance_text: str | None = None
+    guidance_type: str | None = None
+    if isinstance(guidance_dict, dict):
+        guidance_text = guidance_dict.get("text") or None
+        guidance_type = guidance_dict.get("type") or None
+    if not guidance_text:
+        guidance_text = getattr(req, "guideline", None) or cs.get("guideline")
+    if not guidance_type:
+        guidance_type = getattr(req, "guidance_type", None) or cs.get("guidance_type")
 
     # ── LLM 체인 ──────────────────────────────────────
+    # ⬇️ 템플릿 선택(오케스트레이터/툴에서 전달한 templates를 우선)
+    templates: Dict[str, Any] = getattr(req, "templates", {}) or {}
+    attacker_tpl_id = templates.get("attacker")
+    victim_tpl_id = templates.get("victim")
+
+    attacker_prompt = _resolve_attacker_prompt(attacker_tpl_id)
+    victim_prompt   = _resolve_victim_prompt(victim_tpl_id)
+
     attacker_llm = attacker_chat()
     victim_llm = victim_chat()
-    attacker_chain = ATTACKER_PROMPT | attacker_llm
-    victim_chain = VICTIM_PROMPT | victim_llm
+    attacker_chain = attacker_prompt | attacker_llm
+    victim_chain = victim_prompt | victim_llm
+
+    # ⬇️ 피해자 프로필 오버라이드(요청의 victim_profile이 있으면 DB값보다 우선)
+    victim_profile: Dict[str, Any] = getattr(req, "victim_profile", {}) or {}
+    meta_override      = victim_profile.get("meta")
+    knowledge_override = victim_profile.get("knowledge")
+    traits_override    = victim_profile.get("traits")
 
     history_attacker: list = []
     history_victim: list = []
@@ -143,12 +181,8 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
         or ((scenario_all.get("profile") or {}).get("steps") or [])
         or ((offender.profile or {}).get("steps") or [])
     )
-
-    print("[DEBUG] steps_len:", len(steps), "step0:", (steps[0] if steps else None))
     if not steps:
-        raise ValueError(
-            "시나리오 steps가 비어 있습니다. case_scenario.steps 또는 profile.steps를 확인하세요."
-        )
+        raise ValueError("시나리오 steps가 비어 있습니다. case_scenario.steps 또는 profile.steps를 확인하세요.")
 
     current_step_idx = 0
 
@@ -157,19 +191,14 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
     last_offender_text = ""
 
     # ── max_turns(티키타카 횟수) 보정 ──────────────────
-    max_turns = getattr(req, "max_turns", None)
-    if max_turns is None:
-        max_turns = 15  # 프론트가 안 보내면 기본 15턴
+    max_turns = getattr(req, "max_turns", None) or 15
 
     for _ in range(max_turns):
         # ---- 공격자 발화(반쪽 턴) ----
         if attacks >= MAX_OFFENDER_TURNS:
             break
 
-        if current_step_idx < len(steps):
-            current_step_str = steps[current_step_idx]
-        else:
-            current_step_str = ""  # 단계 소진 후 종결 판단만 가능
+        current_step_str = steps[current_step_idx] if current_step_idx < len(steps) else ""
 
         attacker_msg = attacker_chain.invoke({
             "history":       history_attacker,
@@ -227,8 +256,7 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
                 last_victim_text = victim_text
                 turn_index += 1
                 replies += 1
-            # 종료 시에는 턴 카운트(티키타카)는 올리지 않고 빠져나감
-            break
+            break  # 티키타카 카운트 증가 없이 종료
 
         # ---- 피해자 발화(반쪽 턴) ----
         if replies >= MAX_VICTIM_TURNS:
@@ -237,9 +265,9 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
         victim_msg = victim_chain.invoke({
             "history":       history_victim,
             "last_offender": last_offender_text,
-            "meta":          getattr(req, "meta", None) or getattr(victim, "meta", "정보 없음"),
-            "knowledge":     getattr(req, "knowledge", None) or getattr(victim, "knowledge", "정보 없음"),
-            "traits":        getattr(req, "traits", None) or getattr(victim, "traits", "정보 없음"),
+            "meta":          meta_override if meta_override is not None else (getattr(victim, "meta", "정보 없음")),
+            "knowledge":     knowledge_override if knowledge_override is not None else (getattr(victim, "knowledge", "정보 없음")),
+            "traits":        traits_override if traits_override is not None else (getattr(victim, "traits", "정보 없음")),
             "guidance":      guidance_text or "",
             "guidance_type": guidance_type or "",
         })

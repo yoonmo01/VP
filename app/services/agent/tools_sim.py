@@ -94,9 +94,9 @@ def make_sim_tools(db: Session):
     )
     def compose_prompts(data: Any) -> Dict[str, str]:
         """공격자/피해자 역할 프롬프트를 구성한다(실제 기관/계좌/번호 금지 규칙 포함)."""
-        payload = _to_dict(data)
-        scenario = _to_dict(payload.get("scenario") or {})
-        victim_profile = _to_dict(payload.get("victim_profile") or {})
+        payload = _unwrap_data(data)
+        scenario = _unwrap_data(payload.get("scenario") or {})
+        victim_profile = _unwrap_data(payload.get("victim_profile") or {})
         guidance = payload.get("guidance")
 
         safety = (
