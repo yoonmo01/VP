@@ -222,25 +222,25 @@ class OnDemandMCPManager:
                 templates=args.get("templates") or {},
                 guidance=args.get("guidance"),
                 max_turns=int(args.get("max_turns", 15)),
-                include_judgement=True,
+                # include_judgement=True,  # ❌ 제거
                 use_agent=True,
-                # ✅ 라운드 이어달리기
                 case_id_override=args.get("case_id_override"),
                 round_no=args.get("round_no"),
             )
+            # ✅ 키워드 인자 제거
             case_id, total_turns = run_two_bot_simulation(db, sim_request)
+
             return {
                 "case_id": str(case_id),
                 "total_turns": total_turns,
                 "timestamp": datetime.now().isoformat(),
-                # ✅ 에코
                 "debug_echo": {
                     "offender_id": sim_request.offender_id,
                     "victim_id": sim_request.victim_id,
                     "round_no": sim_request.round_no,
                     "case_id_override": sim_request.case_id_override,
                     "has_guidance": bool(sim_request.guidance),
-                }
+                },
             }
         finally:
             db.close()
