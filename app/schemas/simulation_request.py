@@ -27,6 +27,11 @@ class SimulationStartRequest(BaseModel):
     use_tavily: bool = False                    # 커스텀 시나리오일 때만 사용 권장
     max_turns: int = Field(default=15, ge=1, le=30)
 
+    # 🔧 라운드/케이스 제어
+    round_limit: Optional[int] = 3            # 전체 라운드 상한(오케스트레이터가 2~5로 클램프)
+    case_id_override: Optional[str] = None    # 같은 케이스로 이어갈 때 사용(2라운드~)
+    round_no: Optional[int] = 1               # 현재 라운드(로그/디버깅 목적)
+
     # 레거시 호환(프론트가 이미 보내는 값 케어용)
     scenario: Optional[Dict[str, Any]] = None
     objectives: Optional[List[str]] = None
@@ -39,4 +44,8 @@ class SimulationStartRequest(BaseModel):
         # 시나리오: custom_scenario 또는 offender_id 중 하나는 반드시 있어야 함
         if not self.custom_scenario and self.offender_id is None:
             raise ValueError("offender_id 또는 custom_scenario 중 하나는 필수입니다.")
+        if self.round_limit is not None:
+            self.round_limit = max(2, min(int(self.round_limit), 5))
+        if self.round_no is not None:
+            self.round_no = max(1, int(self.round_no))
         return self

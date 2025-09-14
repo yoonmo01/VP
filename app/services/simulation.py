@@ -1,11 +1,12 @@
 # app/services/simulation.py
 from __future__ import annotations
 
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from uuid import UUID
 import re
 
 from sqlalchemy.orm import Session
+from sqlalchemy import func  # ← max(run) 계산용
 
 from app.db import models as m
 from app.core.config import settings
@@ -85,12 +86,10 @@ def _hit_end(text: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────
-# ⬇️ 추가: 템플릿 리졸버 (템플릿 ID → 실제 ChatPromptTemplate)
-#    필요 시 prompt.py에 다른 버전을 추가해도 여기 맵만 확장하면 됨.
+# ⬇️ 템플릿 리졸버 (템플릿 ID → 실제 ChatPromptTemplate)
 # ─────────────────────────────────────────────────────────
 def _resolve_attacker_prompt(template_id: str | None):
-    # 예: "ATTACKER_PROMPT_V1" 같은 문자열이 들어오면 분기
-    # 현재는 단일 버전만 있으므로 기본값으로 매핑
+    # 향후 버전 분기 가능
     return ATTACKER_PROMPT
 
 def _resolve_victim_prompt(template_id: str | None):
@@ -107,19 +106,25 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
     - MAX_OFFENDER_TURNS/MAX_VICTIM_TURNS는 한쪽 발화 하드캡(안전장치)
     """
     # ── 케이스 준비 ─────────────────────────────────────
-    case_id_override: UUID | None = getattr(req, "case_id_override", None)
+    case_id_override: Optional[UUID] = getattr(req, "case_id_override", None)
+    incoming_scenario: Dict[str, Any] = (
+        getattr(req, "case_scenario", None)
+        or getattr(req, "scenario", None)
+        or {}
+    )
+
     if case_id_override:
         case = db.get(m.AdminCase, case_id_override)
         if not case:
             raise ValueError(f"AdminCase {case_id_override} not found")
-        scenario = case.scenario or {}
-        scenario.update(getattr(req, "case_scenario", {}) or {})
+        scenario = (case.scenario or {}).copy()
+        scenario.update(incoming_scenario)  # ← scenario 병합
         case.scenario = scenario
         db.add(case)
         db.commit()
         db.refresh(case)
     else:
-        case = m.AdminCase(scenario=req.case_scenario or {})
+        case = m.AdminCase(scenario=incoming_scenario)
         db.add(case)
         db.commit()
         db.refresh(case)
@@ -132,14 +137,31 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
         raise ValueError(f"Victim {req.victim_id} not found")
 
     # ── 메타 표식 ──────────────────────────────────────
-    run_no: int = int(getattr(req, "run_no", 1))
     use_agent: bool = bool(getattr(req, "use_agent", False))
 
+    # run_no 계산(강화): run_no → round_no 순서로 읽고, 이어달리기+미지정이면 max(run)+1
+    run_no_attr = getattr(req, "run_no", None)
+    if run_no_attr is None:
+        run_no_attr = getattr(req, "round_no", None)
+
+    if case_id_override:
+        if run_no_attr is None:
+            last_run = (
+                db.query(func.max(m.ConversationLog.run))
+                .filter(m.ConversationLog.case_id == case.id)
+                .scalar()
+            )
+            run_no = int((last_run or 0) + 1)
+        else:
+            run_no = int(run_no_attr)
+    else:
+        run_no = int(run_no_attr or 1)
+
     # ⬇️ guidance 주입 (우선순위: req.guidance > req.guideline > case_scenario.guideline)
-    cs: Dict[str, Any] = getattr(req, "case_scenario", {}) or {}
+    cs: Dict[str, Any] = getattr(req, "case_scenario", None) or getattr(req, "scenario", None) or {}
     guidance_dict: Dict[str, Any] | None = getattr(req, "guidance", None)
-    guidance_text: str | None = None
-    guidance_type: str | None = None
+    guidance_text: Optional[str] = None
+    guidance_type: Optional[str] = None
     if isinstance(guidance_dict, dict):
         guidance_text = guidance_dict.get("text") or None
         guidance_type = guidance_dict.get("type") or None
@@ -149,7 +171,6 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
         guidance_type = getattr(req, "guidance_type", None) or cs.get("guidance_type")
 
     # ── LLM 체인 ──────────────────────────────────────
-    # ⬇️ 템플릿 선택(오케스트레이터/툴에서 전달한 templates를 우선)
     templates: Dict[str, Any] = getattr(req, "templates", {}) or {}
     attacker_tpl_id = templates.get("attacker")
     victim_tpl_id = templates.get("victim")
@@ -162,7 +183,7 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
     attacker_chain = attacker_prompt | attacker_llm
     victim_chain = victim_prompt | victim_llm
 
-    # ⬇️ 피해자 프로필 오버라이드(요청의 victim_profile이 있으면 DB값보다 우선)
+    # ⬇️ 피해자 프로필 오버라이드(요청이 있으면 DB보다 우선)
     victim_profile: Dict[str, Any] = getattr(req, "victim_profile", {}) or {}
     meta_override      = victim_profile.get("meta")
     knowledge_override = victim_profile.get("knowledge")
@@ -175,7 +196,11 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
     turns_executed = 0                # 진짜 턴(티키타카) 카운트
 
     # ── Step-Lock: 단계와 커서 ─────────────────────────
-    scenario_all = (req.case_scenario or {}) if not case_id_override else (case.scenario or {})
+    scenario_all = (
+        (getattr(req, "case_scenario", None) or getattr(req, "scenario", None) or {})
+        if not case_id_override else
+        (case.scenario or {})
+    )
     steps: List[str] = (
         (scenario_all.get("steps") or [])
         or ((scenario_all.get("profile") or {}).get("steps") or [])

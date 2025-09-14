@@ -45,6 +45,8 @@ class MCPRunInput(BaseModel):
     templates: Templates
     guidance: Optional[Guidance] = None
     max_turns: int = 15
+    case_id_override: Optional[str] = None
+    round_no: Optional[int] = None
 
 # {"data": {...}} 또는 {...} 모두 허용
 class SingleData(BaseModel):
@@ -222,16 +224,23 @@ class OnDemandMCPManager:
                 max_turns=int(args.get("max_turns", 15)),
                 include_judgement=True,
                 use_agent=True,
+                # ✅ 라운드 이어달리기
+                case_id_override=args.get("case_id_override"),
+                round_no=args.get("round_no"),
             )
             case_id, total_turns = run_two_bot_simulation(db, sim_request)
-            # ✅ 표준화된 구조로 반환 (상위 WS 레이어 없이도 안전)
             return {
-                "ok": True,
                 "case_id": str(case_id),
-                "offender_id": sim_request.offender_id,
-                "victim_id": sim_request.victim_id,
                 "total_turns": total_turns,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                # ✅ 에코
+                "debug_echo": {
+                    "offender_id": sim_request.offender_id,
+                    "victim_id": sim_request.victim_id,
+                    "round_no": sim_request.round_no,
+                    "case_id_override": sim_request.case_id_override,
+                    "has_guidance": bool(sim_request.guidance),
+                }
             }
         finally:
             db.close()
@@ -328,15 +337,7 @@ def make_mcp_tools(mcp_manager: Optional[OnDemandMCPManager] = None):
 
         async def _call_ws() -> Dict[str, Any]:
             try:
-                async with websockets.connect(
-                    mgr.url,
-                    open_timeout=15,
-                    ping_interval=30,
-                    ping_timeout=120,
-                    close_timeout=10,
-                    max_queue=None,
-                ) as websocket:
-                    # initialize
+                async with websockets.connect(mgr.url, open_timeout=15, ping_interval=30, ping_timeout=120, close_timeout=10, max_queue=None) as websocket:
                     await websocket.send(json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}))
                     await websocket.recv()
 
@@ -350,8 +351,13 @@ def make_mcp_tools(mcp_manager: Optional[OnDemandMCPManager] = None):
                     }
                     if model.guidance:
                         arguments["guidance"] = {"type": model.guidance.type, "text": model.guidance.text}
+                    # ✅ 라운드/케이스 인자 전달
+                    if model.case_id_override:
+                        arguments["case_id_override"] = model.case_id_override
+                    if model.round_no:
+                        arguments["round_no"] = model.round_no
 
-                    logger.info(f"[MCP/ws] simulate args(offender_id={model.offender_id}, victim_id={model.victim_id}, max_turns={model.max_turns}, has_guidance={bool(model.guidance)})")
+                    logger.info(f"[MCP/ws] simulate args={arguments}")  # ✅ 디버그 로그
 
                     await websocket.send(json.dumps({
                         "jsonrpc":"2.0","id":2,"method":"tools/call",
@@ -361,26 +367,26 @@ def make_mcp_tools(mcp_manager: Optional[OnDemandMCPManager] = None):
                     data = json.loads(resp)
                     content = (data.get("result") or {}).get("content", {}) or {}
 
-                    # content 예: {"ok": True, "case_id": "...", "total_turns": N, "timestamp": "..."}
                     if isinstance(content, dict) and "case_id" in content:
                         content.update({
                             "ok": True,
                             "offender_id": model.offender_id,
                             "victim_id": model.victim_id,
                             "max_turns": model.max_turns,
+                            # ✅ WS 에코를 한 번 더 상위로
+                            "debug_arguments": arguments,
+                            "debug_result_echo": content.get("debug_echo"),
                         })
                     else:
-                        content = {
-                            "ok": False,
-                            "error": "simulator.run 응답에 case_id 없음",
-                        }
+                        content = {"ok": False, "error": "simulator.run 응답에 case_id 없음"}
+
                     return content
             except Exception as e:
                 logger.error(f"[MCP/ws] 통신 실패: {e}")
                 return {"ok": False, "error": str(e)}
 
         return run_coro_safely(_call_ws())
-
+    
     # ▼▼▼ 새 툴: 최근 케이스 조회 (ConversationLog → AdminCase 경유) ▼▼▼
     @tool(
         "mcp.latest_case",
