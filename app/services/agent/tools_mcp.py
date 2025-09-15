@@ -47,23 +47,46 @@ def _unwrap(obj: Any) -> Dict[str, Any]:
         raise ValueError("Action Input은 JSON 객체여야 합니다.")
     return obj
 
+# app/services/agent/tools_mcp.py
+
 async def _mcp_call_http(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     # FastMCP Streamable HTTP로 접속
-    async with streamablehttp_client(MCP_HTTP_URL) as (read, write):
+    async with streamablehttp_client(MCP_HTTP_URL) as conn:
+        # ── mcp 버전 호환: (read, write) 또는 (read, write, close) 모두 허용 ──
+        try:
+            # tuple / list / custom object 모두 대응
+            if isinstance(conn, (tuple, list)):
+                if len(conn) == 2:
+                    read, write = conn
+                elif len(conn) == 3:
+                    read, write, _ = conn
+                else:
+                    raise RuntimeError(f"Unexpected connection tuple size: {len(conn)}")
+            else:
+                # 혹시 객체 형태면 속성 추출 시도
+                read = getattr(conn, "read", None) or getattr(conn, "reader", None)
+                write = getattr(conn, "write", None) or getattr(conn, "writer", None)
+                if not (read and write):
+                    raise RuntimeError("Unsupported streamablehttp_client return type")
+        except Exception as e:
+            # 디버깅 도움용 상세 로그
+            raise RuntimeError(f"Failed to unpack streamablehttp_client result: {type(conn)} -> {e}") from e
+
         async with ClientSession(read, write) as session:
             tools = await session.list_tools()
             if tool_name not in [t.name for t in tools.tools]:
                 raise RuntimeError(f"MCP tool not found: {tool_name}")
 
             res = await session.call_tool(tool_name, arguments=arguments)
-            # FastMCP는 보통 content[0].text에 JSON 문자열을 넣음
+            # FastMCP는 content[0].text에 JSON 문자열을 넣는 패턴이 일반적
             if res.content and getattr(res.content[0], "text", None):
                 try:
                     return json.loads(res.content[0].text)
                 except Exception:
                     return {"raw": res.content[0].text}
-            # 혹은 서버가 dict 자체를 content로 줄 수도 있음
+            # dict를 통째로 넣는 서버 구현도 있을 수 있음
             return {"result": [c.model_dump() for c in (res.content or [])]}
+
 
 def _run(coro):
     try:

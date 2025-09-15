@@ -220,8 +220,14 @@ def build_agent_and_tools(db: Session, use_tavily: bool) -> Tuple[AgentExecutor,
 
     tools: List = []
     tools += make_sim_tools(db)
-    mcp_tools, mcp_manager = make_mcp_tools()
+    
+    mcp_res = make_mcp_tools()
+    if isinstance(mcp_res, tuple):
+        mcp_tools, mcp_manager = mcp_res
+    else:
+        mcp_tools, mcp_manager = mcp_res, None
     tools += mcp_tools
+    
     tools += make_admin_tools(db, GuidelineRepoDB(db))
     if use_tavily:
         tools += make_tavily_tools()
@@ -498,7 +504,7 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
         }
     finally:
         try:
-            if getattr(mcp_manager, "is_running", False):
+            if mcp_manager and getattr(mcp_manager, "is_running", False):
                 mcp_manager.stop_mcp_server()
         except Exception:
             pass
