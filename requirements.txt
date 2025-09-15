@@ -12,7 +12,7 @@ SQLAlchemy==2.0.31
 psycopg[binary]==3.2.10
 alembic==1.13.2
 
-# LLM / Agents (Updated)
+# LLM / Agents
 langchain>=0.2.15
 langchain-core>=0.2.32
 langchain-openai>=0.2.3
@@ -29,3 +29,6 @@ tavily-python>=0.5.0
 
 # Networking
 websockets>=11.0
+
+# MCP (서버/클라이언트 공용)
+mcp[websockets]>=0.1.0
