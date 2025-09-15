@@ -30,5 +30,5 @@ tavily-python>=0.5.0
 # Networking
 websockets>=11.0
 
-# MCP (서버/클라이언트 공용)
-mcp[websockets]>=0.1.0
+# MCP (Streamable HTTP + CLI)
+mcp[cli]>=0.1.0

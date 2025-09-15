@@ -4,12 +4,16 @@ from typing import Any, Dict, Optional, Literal
 import os, json, asyncio
 from pydantic import BaseModel, Field, ValidationError
 from langchain_core.tools import tool
-from mcp.client.session import ClientSession
-from mcp.transport.websockets.client import connect_websocket
-from app.core.logging import get_logger
 
+# ✅ MCP: Streamable HTTP 클라이언트 사용
+from mcp.client.session import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+from app.core.logging import get_logger
 logger = get_logger(__name__)
-MCP_WS_URL = os.getenv("MCP_WS_URL", "ws://127.0.0.1:5177")  # 외부 MCP 서버 주소
+
+# ✅ HTTP 엔드포인트로 변경 (서버는 /mcp 경로를 노출해야 함)
+MCP_HTTP_URL = os.getenv("MCP_HTTP_URL", "http://127.0.0.1:5177/mcp")
 
 # ───────── 입력 스키마 (app → MCP) ─────────
 class Templates(BaseModel):
@@ -30,7 +34,7 @@ class MCPRunInput(BaseModel):
     guidance: Optional[Guidance] = None
     case_id_override: Optional[str] = None
     round_no: Optional[int] = None
-    # (선택) 모델/온도 옵션을 MCP에 넘기고 싶다면:
+    # (원하면 추가)
     # models: Dict[str, str] = {"attacker": "gpt-4o-mini", "victim": "gemini-1.5-flash"}
     # temperature: float = 0.6
 
@@ -47,23 +51,27 @@ def _unwrap(obj: Any) -> Dict[str, Any]:
         raise ValueError("Action Input은 JSON 객체여야 합니다.")
     return obj
 
-# ───────── MCP 호출기 ─────────
-async def _mcp_call(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    async with connect_websocket(MCP_WS_URL) as (reader, writer):
+# ───────── MCP 호출기(HTTP) ─────────
+async def _mcp_call_http(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    async with streamablehttp_client(MCP_HTTP_URL) as (reader, writer):
         async with ClientSession(reader, writer) as session:
-            # (선택) 도구 목록 검사
+            # (선택) 툴 목록 확인
             tools = await session.list_tools()
             if tool_name not in [t.name for t in tools.tools]:
                 raise RuntimeError(f"MCP tool not found: {tool_name}")
 
             res = await session.call_tool(tool_name, arguments=arguments)
-            # 표준 포맷: content[0].text 에 JSON 문자열 반환하도록 MCP 서버 구현
-            text = res.content[0].text if res.content else "{}"
-            try:
-                return json.loads(text)
-            except Exception:
-                # 서버가 이미 dict를 보낼 수도 있음
-                return {"raw": text}
+
+            # 서버가 content[0].text에 JSON 문자열을 넣어 돌려주는 것이 표준적
+            if res.content and res.content[0].text is not None:
+                text = res.content[0].text
+                try:
+                    return json.loads(text)
+                except Exception:
+                    return {"raw": text}
+
+            # 서버가 객체를 직접 싣는 구현이라면(비표준) content[0].json 같은 처리가 필요할 수 있음
+            return {}
 
 def _run(coro):
     try:
@@ -71,7 +79,6 @@ def _run(coro):
     except RuntimeError:
         return asyncio.run(coro)
     else:
-        # 이미 이벤트 루프가 있으면 별도 태스크로 실행
         return loop.run_until_complete(coro)
 
 # ───────── LangChain Tool: mcp.simulator_run ─────────
@@ -90,6 +97,7 @@ def make_mcp_tools():
             logger.info("[mcp.simulator_run] guidance provided before first run → ignored")
             payload.pop("guidance", None)
 
+        # 스키마 검증
         try:
             model = MCPRunInput.model_validate(payload)
         except ValidationError as ve:
@@ -105,7 +113,10 @@ def make_mcp_tools():
             "victim_id": model.victim_id,
             "scenario": model.scenario,
             "victim_profile": model.victim_profile,
-            "templates": {"attacker": model.templates.attacker, "victim": model.templates.victim},
+            "templates": {
+                "attacker": model.templates.attacker,
+                "victim": model.templates.victim
+            },
             "max_turns": model.max_turns,
         }
         if model.guidance:
@@ -117,8 +128,8 @@ def make_mcp_tools():
 
         logger.info(f"[MCP] call sim.simulate_dialogue args={list(args.keys())}")
 
-        # 외부 MCP 호출
-        res = _run(_mcp_call("sim.simulate_dialogue", args))
+        # 외부 MCP 호출 (HTTP)
+        res = _run(_mcp_call_http("sim.simulate_dialogue", args))
 
         # 서버 결과 표준화
         # 기대: {"result": {"conversation_id": "...", "turns":[{role,text}...], ...}}
@@ -134,5 +145,4 @@ def make_mcp_tools():
             "result": result,
         }
 
-    # (선택) 최신 케이스 조회 툴은 app DB를 쓰므로 유지 가능
     return [simulator_run]
