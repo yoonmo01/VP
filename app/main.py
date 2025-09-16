@@ -18,6 +18,9 @@ from app.routers import conversations_read, simulator as simulator_router
 from app.routers import agent as agent_router
 from app.routers.personalized import router as personalized_router
 
+# TTS
+from app.routers.tts import router as tts_router
+
 # ✅ 커스텀 API 라우터 추가
 from app.routers.custom import router as custom
 # from app.db.models import custom
@@ -61,6 +64,9 @@ app.include_router(agent_router.router, prefix=settings.API_PREFIX)
 
 # ✅ 커스텀 라우터 등록: /api/custom/*
 app.include_router(custom, prefix=settings.API_PREFIX)
+
+# ✅ TTS 라우터 등록
+app.include_router(tts_router, prefix=settings.API_PREFIX)
 
 # ─────────────────────────────────────────────────────────────
 # Root
