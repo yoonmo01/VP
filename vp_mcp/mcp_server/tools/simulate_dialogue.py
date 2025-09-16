@@ -1,11 +1,13 @@
 # VP/mcp_server/mcp_server/tools/simulate_dialogue.py
 
 from typing import List, Dict, Any, Optional
+from pydantic import ValidationError
 from ..schemas import SimulationInput, SimulationResult, Turn
 from ..llm.providers import AttackerLLM, VictimLLM
 from ..db.base import SessionLocal
 from ..db.models import Conversation, TurnLog
 from ..utils.end_rules import attacker_declared_end, VICTIM_END_LINE
+
 
 # FastMCP 등록용
 from mcp.server.fastmcp import FastMCP
@@ -14,6 +16,65 @@ from mcp.server.fastmcp import FastMCP
 MAX_OFFENDER_TURNS = 60
 MAX_VICTIM_TURNS = 60
 
+# ─────────────────────────────────────────────────────────
+# FastMCP에 툴 등록 (server.py에서 호출)
+# ─────────────────────────────────────────────────────────
+def register_simulate_dialogue_tool_fastmcp(mcp: FastMCP):
+    print(">> registering sim.simulate_dialogue and system.echo")
+
+    @mcp.tool(name="system.echo", description="Echo back arguments.")
+    async def system_echo(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        return {"ok": True, "echo": arguments}
+
+    @mcp.tool(
+        name="sim.simulate_dialogue",
+        description="공격자/피해자 LLM 교대턴 시뮬레이션 실행 후 로그 반환 및 DB 저장"
+    )
+    async def simulate_dialogue(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        # 1) 입력 스키마 검증
+        try:
+            payload = _coerce_input_legacy(arguments)
+            data = SimulationInput.model_validate(arguments)
+        except ValidationError as ve:
+            return {
+                "ok": False,
+                "error": "validation_error",
+                "pydantic_errors": ve.errors(),
+                "received": arguments,
+            }
+
+        # 2) 실제 실행
+        try:
+            out = simulate_dialogue_impl(data)
+            # out이 Pydantic 모델이면 dump, dict면 그대로
+            result = out.model_dump() if hasattr(out, "model_dump") else out
+            return {"ok": True, "result": result}
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            # ❗여기서 절대 예외를 밖으로 던지지 말고 JSON으로 반환
+            return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+
+
+
+
+def _coerce_input_legacy(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    args = dict(arguments or {})
+    attacker = args.get("attacker") or {}
+    victim = args.get("victim") or {}
+
+    if not (attacker.get("system") and victim.get("system")):
+        tpls = (args.get("templates") or {}) if isinstance(args.get("templates"), dict) else {}
+        atk_tpl = tpls.get("attacker") or ""
+        vic_tpl = tpls.get("victim") or ""
+        if atk_tpl and not attacker.get("system"):
+            attacker["system"] = f"[TEMPLATE:{atk_tpl}] 공격자 기본 시스템 프롬프트"
+        if vic_tpl and not victim.get("system"):
+            victim["system"] = f"[TEMPLATE:{vic_tpl}] 피해자 기본 시스템 프롬프트"
+        args["attacker"] = attacker
+        args["victim"] = victim
+
+    return args
 
 # ─────────────────────────────────────────────────────────
 # 순수 구현 함수 (입력 → 실행 → dict 반환)
@@ -199,15 +260,3 @@ def simulate_dialogue_impl(input_obj: SimulationInput) -> Dict[str, Any]:
         db.close()
 
 
-# ─────────────────────────────────────────────────────────
-# FastMCP에 툴 등록 (server.py에서 호출)
-# ─────────────────────────────────────────────────────────
-def register_simulate_dialogue_tool_fastmcp(mcp: FastMCP):
-    @mcp.tool(
-        name="sim.simulate_dialogue",
-        description="공격자/피해자 LLM 교대턴 시뮬레이션 실행 후 로그 반환 및 DB 저장"
-    )
-    async def simulate_dialogue(arguments: Dict[str, Any]) -> Dict[str, Any]:
-        # arguments(dict) → Pydantic 모델로 검증
-        data = SimulationInput.model_validate(arguments)
-        return simulate_dialogue_impl(data)
