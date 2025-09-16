@@ -15,6 +15,10 @@ from app.db.session import try_get_db
 
 # (선택) 기존 OpenAI 더미 호출 그대로 사용
 from openai import OpenAI
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
 
 _openai_api_key = os.getenv("OPENAI_API_KEY")
 _client = OpenAI(api_key=_openai_api_key) if _openai_api_key else None
