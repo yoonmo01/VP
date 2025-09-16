@@ -1,23 +1,38 @@
+# app/services/agent/tools_admin.py
+
 from __future__ import annotations
-from typing import Dict, Any, Optional, List, Literal
+from typing import Dict, Any, Optional, List
 from uuid import UUID
+
+import os
+import json
+import ast
+import httpx
+
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
+
 from app.db import models as m
-
-import json, ast
-
 from app.core.logging import get_logger
-from app.services.admin_summary import (
-    summarize_case,            # 케이스 단위(레거시)
-    summarize_run_full,        # ⟵ 라운드별 전체대화 판정 (신규)
-)
+
+# (중요) 요약/판정기는 "턴 리스트(JSON)"만으로 판정하도록 설계
+# summarize_run_full(turns=List[Dict[str, Any]]) 시그니처를 권장
+# 만약 기존 summarize_run_full이 (db, case_id, run_no)만 받는다면,
+# 해당 파일도 turns 기반 시그니처로 업데이트하세요.
+from app.services.admin_summary import summarize_run_full  # turns 기반 사용 권장
 
 logger = get_logger(__name__)
 
-# ---- 공통: {"data": {...}} 입력 통일 ----
+# ─────────────────────────────────────────────────────────
+# 환경변수
+# ─────────────────────────────────────────────────────────
+MCP_BASE_URL = os.getenv("MCP_BASE_URL", "http://127.0.0.1:5177")  # 운영 시 외부 MCP 주소로 설정
+
+# ─────────────────────────────────────────────────────────
+# 공통: {"data": {...}} 입력 통일
+# ─────────────────────────────────────────────────────────
 class SingleData(BaseModel):
     data: Any = Field(..., description="이 안에 실제 페이로드를 담는다")
 
@@ -58,7 +73,9 @@ def _normalize_kind(val: Any) -> str:
         return s
     raise HTTPException(status_code=422, detail="kind는 문자열이어야 합니다.")
 
-# ----- 검증용 내부 스키마 -----
+# ─────────────────────────────────────────────────────────
+# 입력 스키마
+# ─────────────────────────────────────────────────────────
 class _JudgeReadInput(BaseModel):
     case_id: UUID
     run_no: int = Field(1, ge=1)
@@ -66,6 +83,8 @@ class _JudgeReadInput(BaseModel):
 class _JudgeMakeInput(BaseModel):
     case_id: UUID
     run_no: int = Field(1, ge=1)
+    # 오케스트레이터가 바로 턴을 넘겨줄 수 있게 허용
+    turns: Optional[List[Dict[str, Any]]] = None
 
 class _GuidanceInput(BaseModel):
     kind: str = Field(..., pattern="^(P|A)$", description="지침 종류: 'P'(피해자) | 'A'(공격자)")
@@ -79,7 +98,47 @@ class _SavePreventionInput(BaseModel):
     steps: List[str] = Field(default_factory=list)
 
 # ─────────────────────────────────────────────────────────
-# 저장/조회(가능 시 AdminCaseSummary, 아니면 AdminCase.evidence에 누적)
+# MCP에서 대화 턴(JSON) 가져오기
+# ─────────────────────────────────────────────────────────
+def _fetch_turns_from_mcp(case_id: UUID, run_no: int) -> List[Dict[str, Any]]:
+    """
+    MCP가 제공하는 대화로그(JSON) 엔드포인트에서 특정 라운드의 전체 턴을 받아온다.
+    기대 형식: [{"role": "attacker"|"victim"|"system", "text": "...", "meta": {...}}, ...]
+    기본 엔드포인트 가정: GET {MCP_BASE_URL}/api/cases/{case_id}/turns?run={run_no}
+    """
+    url = f"{MCP_BASE_URL}/api/cases/{case_id}/turns"
+    params = {"run": run_no}
+    try:
+        with httpx.Client(timeout=30) as client:
+            r = client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        logger.error(f"[MCP] 대화 로그 조회 실패: {e}")
+        raise HTTPException(status_code=502, detail=f"MCP 대화로그 조회 실패: {e}")
+
+    # 서버 스키마에 맞게 정규화
+    turns: Any = None
+    if isinstance(data, dict):
+        # 흔한 케이스들 대응
+        if "turns" in data:
+            turns = data["turns"]
+        elif "result" in data and isinstance(data["result"], dict) and "turns" in data["result"]:
+            turns = data["result"]["turns"]
+        else:
+            # 루트에 라운드별 묶음이 있을 수도 있음: {"run":1,"turns":[...]} 등
+            if all(isinstance(v, list) for v in data.values()):
+                # 첫 번째 리스트를 turns로 가정
+                turns = next(iter(data.values()))
+    elif isinstance(data, list):
+        turns = data
+
+    if not isinstance(turns, list):
+        raise HTTPException(status_code=502, detail="MCP 응답에서 turns 배열을 찾을 수 없습니다.")
+    return turns  # type: ignore[return-value]
+
+# ─────────────────────────────────────────────────────────
+# 판정 결과 저장 / 조회 (DB는 결과 저장·조회에만 사용)
 # ─────────────────────────────────────────────────────────
 def _persist_verdict(
     db: Session,
@@ -202,7 +261,6 @@ def _read_persisted_verdict(db: Session, *, case_id: UUID, run_no: int) -> Optio
     try:
         case = db.get(m.AdminCase, case_id)
         raw = (getattr(case, "evidence", "") or "")
-        # {"run": N, "verdict": {...}} 패턴 라인 검색
         for line in raw.splitlines():
             try:
                 obj = json.loads(line)
@@ -212,7 +270,6 @@ def _read_persisted_verdict(db: Session, *, case_id: UUID, run_no: int) -> Optio
                 continue
     except Exception:
         pass
-
     return None
 
 # ─────────────────────────────────────────────────────────
@@ -222,7 +279,7 @@ def make_admin_tools(db: Session, guideline_repo):
     @tool(
         "admin.make_judgement",
         args_schema=SingleData,
-        description="(case_id, run_no)의 **전체 대화(공/피)** 를 LLM으로 판정하여 phishing/evidence/risk/vulnerabilities/continue를 생성하고 저장한다."
+        description="(case_id, run_no)의 전체 대화를 MCP JSON 또는 전달받은 turns로 판정한다. DB는 결과 저장에만 사용한다."
     )
     def make_judgement(data: Any) -> Dict[str, Any]:
         payload = _unwrap_data(data)
@@ -231,14 +288,28 @@ def make_admin_tools(db: Session, guideline_repo):
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"JudgeMakeInput 검증 실패: {e}")
 
-        verdict = summarize_run_full(db, ji.case_id, ji.run_no)
+        # 1) Action Input으로 턴이 오면 그대로 사용
+        turns: Optional[List[Dict[str, Any]]] = ji.turns
+
+        # 2) 없으면 MCP에서 가져오기 (DB 접근 금지)
+        if turns is None:
+            turns = _fetch_turns_from_mcp(ji.case_id, ji.run_no)
+
+        # 3) 턴 기반 요약/판정 (admin_summary.summarize_run_full은 turns를 받아야 함)
+        try:
+            verdict = summarize_run_full(turns=turns)  # <- turns-only
+        except TypeError as te:
+            # 만약 summarize_run_full이 아직 옛 시그니처라면, 에러를 명확히 알림
+            logger.error("[admin.make_judgement] summarize_run_full가 turns 기반 시그니처를 지원해야 합니다.")
+            raise HTTPException(
+                status_code=500,
+                detail="summarize_run_full이 'turns' 인자를 지원하도록 업데이트해 주세요."
+            ) from te
 
         # ── 정책 오버라이드: critical일 때만 stop, 그 외는 continue ──
         risk = verdict.get("risk") or {}
-        # score 정규화
         score = int(risk.get("score", 0) or 0)
-        if score < 0: score = 0
-        if score > 100: score = 100
+        score = 0 if score < 0 else (100 if score > 100 else score)
         risk["score"] = score
 
         level = str((risk.get("level") or "")).lower()
@@ -262,7 +333,6 @@ def make_admin_tools(db: Session, guideline_repo):
 
         persisted = _persist_verdict(db, case_id=ji.case_id, run_no=ji.run_no, verdict=verdict)
 
-        # 결과 그대로 반환
         return {
             "ok": True,
             "persisted": persisted,
@@ -274,7 +344,7 @@ def make_admin_tools(db: Session, guideline_repo):
     @tool(
         "admin.judge",
         args_schema=SingleData,
-        description="(case_id, run_no)의 저장된 판정을 조회. 없으면 케이스 전체 로그로 summarize_case를 수행해 evidence만 반환(호환 목적)."
+        description="(case_id, run_no)의 **저장된 판정**을 조회한다. 저장된 결과가 없으면 '없음'을 알려준다."
     )
     def judge(data: Any) -> Dict[str, Any]:
         payload = _unwrap_data(data)
@@ -285,31 +355,24 @@ def make_admin_tools(db: Session, guideline_repo):
 
         saved = _read_persisted_verdict(db, case_id=ji.case_id, run_no=ji.run_no)
         if saved is not None:
-            # 기존 Orchestrator 호환: reason = evidence
             out = {
                 "phishing": bool(saved.get("phishing", False)),
-                "reason": str(saved.get("evidence", "")),
+                "reason": str(saved.get("evidence", "")),  # 기존 호환
                 "run_no": ji.run_no,
-            }
-            # 추가 필드도 함께 반환(신규 파이프라인에서 사용)
-            out.update({
+                # 신규 필드도 함께
                 "evidence": saved.get("evidence", ""),
-                "risk": saved.get("risk", {"score":0,"level":"","rationale":""}),
+                "risk": saved.get("risk", {"score": 0, "level": "", "rationale": ""}),
                 "victim_vulnerabilities": saved.get("victim_vulnerabilities", []),
-                "continue": saved.get("continue", {"recommendation":"continue","reason":""}),
-            })
+                "continue": saved.get("continue", {"recommendation": "continue", "reason": ""}),
+            }
             return out
 
-        # Fallback: 케이스 전체 로그로 레거시 요약(evidence만)
-        res = summarize_case(db, ji.case_id) or {}
+        # 레거시 폴백 제거: DB 로그 요약으로 판단하지 않음
         return {
-            "phishing": bool(res.get("phishing")),
-            "reason": str(res.get("evidence", "")),
+            "ok": False,
+            "case_id": str(ji.case_id),
             "run_no": ji.run_no,
-            "evidence": str(res.get("evidence", "")),
-            "risk": {"score": 0, "level": "", "rationale": "저장된 라운드 판정이 없어 케이스 단위 요약 결과만 제공"},
-            "victim_vulnerabilities": [],
-            "continue": {"recommendation": "continue", "reason": "라운드별 판정 부재"},
+            "message": "저장된 라운드 판정이 없습니다. admin.make_judgement를 먼저 호출하세요."
         }
 
     @tool(
@@ -336,7 +399,7 @@ def make_admin_tools(db: Session, guideline_repo):
     @tool(
         "admin.save_prevention",
         args_schema=SingleData,
-        description="개인화된 예방책을 DB에 저장한다. Action Input은 {'data': {'case_id':UUID,'offender_id':int,'victim_id':int,'run_no':int,'summary':str,'steps':[str,...]}}"
+        description="개인화된 예방책을 DB에 저장한다. {'data': {'case_id':UUID,'offender_id':int,'victim_id':int,'run_no':int,'summary':str,'steps':[str,...]}}"
     )
     def save_prevention(data: Any) -> str:
         payload = _unwrap_data(data)

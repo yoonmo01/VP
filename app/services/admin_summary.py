@@ -71,8 +71,17 @@ D) **사칭에 따른 실행**
 """.strip()
 
 # =========================
-# 포맷터 (라운드별 전체 대화)
+# 포맷터 (턴 리스트 → 문자열)
 # =========================
+def _format_dialog_from_turns(turns: List[Dict[str, Any]]) -> str:
+    lines: List[str] = []
+    for i, t in enumerate(turns, start=1):
+        role = t.get("role", "")
+        role_ko = "공격자" if role in ("offender", "attacker") else "피해자"
+        text = t.get("text") or t.get("content") or ""
+        lines.append(f"{i} [{role_ko}] {text}")
+    return "\n".join(lines)
+
 def _format_dialog_full_run(db: Session, case_id: UUID, run_no: int) -> str:
     rows = (
         db.query(m.ConversationLog)
@@ -100,7 +109,7 @@ def _scenario_string(db: Session, case_id: UUID) -> str:
         return json.dumps(scen, ensure_ascii=False)
     return str(scen or "")
 
-# ====== 공통 노이즈 제거/JSON 추출 ======
+# ====== JSON 파싱 유틸 (생략 없이 기존 코드 유지) ======
 def _strip_code_fences(s: str) -> str:
     s = s.strip()
     s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.I)
@@ -158,15 +167,11 @@ def _escape_inner_quotes_for_value_of(key: str, text: str) -> str:
         return m.group(1) + val_fixed + m.group(3)
     return pat.sub(_fix, text)
 
-# =========================
-# JSON 파서 (느슨, 새 스키마 대응)
-# =========================
 def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
     s0 = _normalize_quotes(_strip_code_fences(s))
     raw = _extract_json_with_balancing(s0)
 
     def _sanitize(d: Dict[str, Any]) -> Dict[str, Any]:
-        # 스키마 표준화
         phishing = bool(d.get("phishing", False))
         evidence = str(d.get("evidence", ""))
 
@@ -176,7 +181,6 @@ def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
         if score > 100: score = 100
         level = str(risk.get("level") or "")
         if level not in {"low", "medium", "high", "critical"}:
-            # 레벨 자동 보정
             level = (
                 "critical" if score >= 75 else
                 "high"     if score >= 50 else
@@ -185,22 +189,18 @@ def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
             )
         rationale = str(risk.get("rationale", ""))
 
-        vul = d.get("victim_vulnerabilities") or d.get("vulnerabilities") or []
+        vul = d.get("victim_vulnerabilities") or []
         if not isinstance(vul, list):
             vul = [str(vul)]
         vul = [str(x) for x in vul][:6]
 
         cont = d.get("continue") or {}
-        rec_raw  = cont.get("recommendation")
-        reason   = str(cont.get("reason", ""))
-        
-        rec = "stop" if level == "critical" else "continue"
-        if not reason:
-            reason = (
-                "위험도가 critical로 판정되어 시나리오를 종료합니다."
-                if rec == "stop"
-                else "위험도가 critical이 아니므로 수법 고도화/추가 라운드 진행을 권고합니다."
-            )
+        rec = cont.get("recommendation") or ("stop" if level == "critical" else "continue")
+        reason = str(cont.get("reason", "")) or (
+            "위험도가 critical로 판정되어 시나리오를 종료합니다."
+            if rec == "stop" else
+            "위험도가 critical이 아니므로 수법 고도화/추가 라운드 진행을 권고합니다."
+        )
 
         return {
             "phishing": phishing,
@@ -210,13 +210,11 @@ def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
             "continue": {"recommendation": rec, "reason": reason},
         }
 
-    # 1차 그대로
     try:
         return _sanitize(json.loads(raw))
     except Exception:
         pass
 
-    # 2차 최소 보정
     fixed_min = re.sub(r'(:\s*)0+(\d+)(\s*[,\}])', r': \2\3', raw)
     fixed_min = re.sub(r",(\s*[}\]])", r"\1", fixed_min)
     try:
@@ -224,24 +222,35 @@ def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 3차 evidence 따옴표 보정
     fixed_esc = _escape_inner_quotes_for_value_of("evidence", fixed_min)
-    try:
-        return _sanitize(json.loads(fixed_esc))
-    except Exception as e:
-        raise ValueError(f"LLM JSON 파싱 실패: {e}\nRAW:\n{raw}\nFIXED:\n{fixed_esc}") from e
+    return _sanitize(json.loads(fixed_esc))
 
 # =========================
-# 메인: 라운드별 전체대화 판정 (LLM-only)
+# 메인: 라운드별 전체대화 판정
 # =========================
-def summarize_run_full(db: Session, case_id: UUID, run_no: int) -> Dict[str, Any]:
-    scenario_str = _scenario_string(db, case_id)
-    dialog = _format_dialog_full_run(db, case_id, run_no)
+def summarize_run_full(
+    db: Optional[Session] = None,
+    case_id: Optional[UUID] = None,
+    run_no: Optional[int] = None,
+    turns: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    - turns 인자가 있으면 그것을 그대로 사용
+    - 없으면 (db, case_id, run_no) 기반으로 DB에서 불러오기
+    """
+    if turns is not None:
+        dialog = _format_dialog_from_turns(turns)
+        scenario_str = ""  # MCP JSON으로 넘어오는 경우 시나리오 문자열은 생략 가능
+    else:
+        if db is None or case_id is None or run_no is None:
+            raise ValueError("summarize_run_full: turns 또는 (db, case_id, run_no) 중 하나는 제공해야 합니다.")
+        dialog = _format_dialog_full_run(db, case_id, run_no)
+        scenario_str = _scenario_string(db, case_id)
 
     if not dialog.strip():
         return {
             "phishing": False,
-            "evidence": "해당 라운드에 대화가 없어 피해 여부를 판정할 수 없습니다.",
+            "evidence": "대화가 없어 피해 여부를 판정할 수 없습니다.",
             "risk": {"score": 0, "level": "low", "rationale": "대화 없음"},
             "victim_vulnerabilities": [],
             "continue": {"recommendation": "continue", "reason": "분석할 대화가 없어 추가 수집 필요"},
@@ -252,16 +261,13 @@ def summarize_run_full(db: Session, case_id: UUID, run_no: int) -> Dict[str, Any
     return _json_loads_lenient_full(resp)
 
 # =========================
-# (레거시) 케이스 단위 판정 - 전체 대화 사용
-#   - simulation.py 등에서 기존 summarize_case(db, case_id)를 호출하므로
-#     하위 호환 위해 케이스 전체(모든 run) 로그로 판정해 저장
+# 레거시 케이스 단위 판정
 # =========================
 def summarize_case(db: Session, case_id: UUID):
     case = db.get(m.AdminCase, case_id)
     if case is None:
         raise ValueError(f"AdminCase {case_id} not found")
 
-    # 케이스의 모든 run을 하나로 합쳐 전체 로그로 판단
     rows = (
         db.query(m.ConversationLog)
         .filter(m.ConversationLog.case_id == case_id)
@@ -271,14 +277,12 @@ def summarize_case(db: Session, case_id: UUID):
     if not rows:
         case.phishing = False
         case.evidence = "대화가 없어 피해 여부를 판정할 수 없음."
-        case.defense_count = 0
         case.status = "completed"
         case.completed_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(case)
-        return {"phishing": False, "evidence": case.evidence, "defense_count": 0}
+        return {"phishing": False, "evidence": case.evidence}
 
-    # run 별 포맷과 동일한 문자열로 합치되, run 표시만 추가
     lines: List[str] = []
     for r in rows:
         role_ko = "공격자" if r.role == "offender" else "피해자"
@@ -290,13 +294,243 @@ def summarize_case(db: Session, case_id: UUID):
     resp = llm.invoke(PROMPT_FULL_DIALOG.format(scenario=scenario_str, dialog=dialog)).content
     parsed = _json_loads_lenient_full(resp)
 
-    # LLM 결과 저장(케이스 단위)
     case.phishing = bool(parsed.get("phishing", False))
     case.evidence = str(parsed.get("evidence", ""))
-    case.defense_count = 0
     case.status = "completed"
     case.completed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(case)
 
-    return {"phishing": case.phishing, "evidence": case.evidence, "defense_count": 0}
+    return {"phishing": case.phishing, "evidence": case.evidence}
+
+
+# # =========================
+# # 포맷터 (라운드별 전체 대화)
+# # =========================
+# def _format_dialog_full_run(db: Session, case_id: UUID, run_no: int) -> str:
+#     rows = (
+#         db.query(m.ConversationLog)
+#         .filter(
+#             m.ConversationLog.case_id == case_id,
+#             m.ConversationLog.run == run_no,
+#         )
+#         .order_by(m.ConversationLog.turn_index.asc())
+#         .all()
+#     )
+#     if not rows:
+#         return ""
+#     out: List[str] = []
+#     for r in rows:
+#         role_ko = "공격자" if r.role == "offender" else "피해자"
+#         out.append(f"{r.turn_index} [{role_ko}] {r.content or ''}")
+#     return "\n".join(out)
+
+# def _scenario_string(db: Session, case_id: UUID) -> str:
+#     case = db.get(m.AdminCase, case_id)
+#     if not case:
+#         return ""
+#     scen = getattr(case, "scenario", None)
+#     if isinstance(scen, (dict, list)):
+#         return json.dumps(scen, ensure_ascii=False)
+#     return str(scen or "")
+
+# # ====== 공통 노이즈 제거/JSON 추출 ======
+# def _strip_code_fences(s: str) -> str:
+#     s = s.strip()
+#     s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.I)
+#     s = re.sub(r"\s*```$", "", s)
+#     return s.strip()
+
+# def _normalize_quotes(s: str) -> str:
+#     return (
+#         s.replace("\u201c", '"').replace("\u201d", '"')
+#          .replace("\u2018", "'").replace("\u2019", "'")
+#     )
+
+# def _extract_json_with_balancing(s: str) -> str:
+#     start = s.find("{")
+#     if start == -1:
+#         return s.strip()
+#     stack = []
+#     in_str = False
+#     esc = False
+#     end = None
+#     for i in range(start, len(s)):
+#         ch = s[i]
+#         if in_str:
+#             if esc:
+#                 esc = False
+#             elif ch == "\\":
+#                 esc = True
+#             elif ch == '"':
+#                 in_str = False
+#         else:
+#             if ch == '"':
+#                 in_str = True
+#             elif ch == "{":
+#                 stack.append("}")
+#             elif ch == "[":
+#                 stack.append("]")
+#             elif ch in ("}", "]"):
+#                 if stack and stack[-1] == ch:
+#                     stack.pop()
+#                     if not stack:
+#                         end = i
+#                         break
+#     if end is not None:
+#         return s[start:end + 1]
+#     balanced = s[start:]
+#     while stack:
+#         balanced += stack.pop()
+#     return balanced
+
+# def _escape_inner_quotes_for_value_of(key: str, text: str) -> str:
+#     pat = re.compile(rf'("{re.escape(key)}"\s*:\s*")(?P<val>.*)(")\s*(?=[,}}])', re.S)
+#     def _fix(m: re.Match) -> str:
+#         val = m.group("val")
+#         val_fixed = re.sub(r'(?<!\\)"', r'\\"', val)
+#         return m.group(1) + val_fixed + m.group(3)
+#     return pat.sub(_fix, text)
+
+# # =========================
+# # JSON 파서 (느슨, 새 스키마 대응)
+# # =========================
+# def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
+#     s0 = _normalize_quotes(_strip_code_fences(s))
+#     raw = _extract_json_with_balancing(s0)
+
+#     def _sanitize(d: Dict[str, Any]) -> Dict[str, Any]:
+#         # 스키마 표준화
+#         phishing = bool(d.get("phishing", False))
+#         evidence = str(d.get("evidence", ""))
+
+#         risk = d.get("risk") or {}
+#         score = int(risk.get("score", 0))
+#         if score < 0: score = 0
+#         if score > 100: score = 100
+#         level = str(risk.get("level") or "")
+#         if level not in {"low", "medium", "high", "critical"}:
+#             # 레벨 자동 보정
+#             level = (
+#                 "critical" if score >= 75 else
+#                 "high"     if score >= 50 else
+#                 "medium"   if score >= 25 else
+#                 "low"
+#             )
+#         rationale = str(risk.get("rationale", ""))
+
+#         vul = d.get("victim_vulnerabilities") or d.get("vulnerabilities") or []
+#         if not isinstance(vul, list):
+#             vul = [str(vul)]
+#         vul = [str(x) for x in vul][:6]
+
+#         cont = d.get("continue") or {}
+#         rec_raw  = cont.get("recommendation")
+#         reason   = str(cont.get("reason", ""))
+        
+#         rec = "stop" if level == "critical" else "continue"
+#         if not reason:
+#             reason = (
+#                 "위험도가 critical로 판정되어 시나리오를 종료합니다."
+#                 if rec == "stop"
+#                 else "위험도가 critical이 아니므로 수법 고도화/추가 라운드 진행을 권고합니다."
+#             )
+
+#         return {
+#             "phishing": phishing,
+#             "evidence": evidence,
+#             "risk": {"score": score, "level": level, "rationale": rationale},
+#             "victim_vulnerabilities": vul,
+#             "continue": {"recommendation": rec, "reason": reason},
+#         }
+
+#     # 1차 그대로
+#     try:
+#         return _sanitize(json.loads(raw))
+#     except Exception:
+#         pass
+
+#     # 2차 최소 보정
+#     fixed_min = re.sub(r'(:\s*)0+(\d+)(\s*[,\}])', r': \2\3', raw)
+#     fixed_min = re.sub(r",(\s*[}\]])", r"\1", fixed_min)
+#     try:
+#         return _sanitize(json.loads(fixed_min))
+#     except Exception:
+#         pass
+
+#     # 3차 evidence 따옴표 보정
+#     fixed_esc = _escape_inner_quotes_for_value_of("evidence", fixed_min)
+#     try:
+#         return _sanitize(json.loads(fixed_esc))
+#     except Exception as e:
+#         raise ValueError(f"LLM JSON 파싱 실패: {e}\nRAW:\n{raw}\nFIXED:\n{fixed_esc}") from e
+
+# # =========================
+# # 메인: 라운드별 전체대화 판정 (LLM-only)
+# # =========================
+# def summarize_run_full(db: Session, case_id: UUID, run_no: int) -> Dict[str, Any]:
+#     scenario_str = _scenario_string(db, case_id)
+#     dialog = _format_dialog_full_run(db, case_id, run_no)
+
+#     if not dialog.strip():
+#         return {
+#             "phishing": False,
+#             "evidence": "해당 라운드에 대화가 없어 피해 여부를 판정할 수 없습니다.",
+#             "risk": {"score": 0, "level": "low", "rationale": "대화 없음"},
+#             "victim_vulnerabilities": [],
+#             "continue": {"recommendation": "continue", "reason": "분석할 대화가 없어 추가 수집 필요"},
+#         }
+
+#     llm = admin_chat()
+#     resp = llm.invoke(PROMPT_FULL_DIALOG.format(scenario=scenario_str, dialog=dialog)).content
+#     return _json_loads_lenient_full(resp)
+
+# # =========================
+# # (레거시) 케이스 단위 판정 - 전체 대화 사용
+# #   - simulation.py 등에서 기존 summarize_case(db, case_id)를 호출하므로
+# #     하위 호환 위해 케이스 전체(모든 run) 로그로 판정해 저장
+# # =========================
+# def summarize_case(db: Session, case_id: UUID):
+#     case = db.get(m.AdminCase, case_id)
+#     if case is None:
+#         raise ValueError(f"AdminCase {case_id} not found")
+
+#     # 케이스의 모든 run을 하나로 합쳐 전체 로그로 판단
+#     rows = (
+#         db.query(m.ConversationLog)
+#         .filter(m.ConversationLog.case_id == case_id)
+#         .order_by(m.ConversationLog.run.asc(), m.ConversationLog.turn_index.asc())
+#         .all()
+#     )
+#     if not rows:
+#         case.phishing = False
+#         case.evidence = "대화가 없어 피해 여부를 판정할 수 없음."
+#         case.defense_count = 0
+#         case.status = "completed"
+#         case.completed_at = datetime.now(timezone.utc)
+#         db.commit()
+#         db.refresh(case)
+#         return {"phishing": False, "evidence": case.evidence, "defense_count": 0}
+
+#     # run 별 포맷과 동일한 문자열로 합치되, run 표시만 추가
+#     lines: List[str] = []
+#     for r in rows:
+#         role_ko = "공격자" if r.role == "offender" else "피해자"
+#         lines.append(f"run {r.run} :: {r.turn_index} [{role_ko}] {r.content or ''}")
+#     dialog = "\n".join(lines)
+#     scenario_str = _scenario_string(db, case_id)
+
+#     llm = admin_chat()
+#     resp = llm.invoke(PROMPT_FULL_DIALOG.format(scenario=scenario_str, dialog=dialog)).content
+#     parsed = _json_loads_lenient_full(resp)
+
+#     # LLM 결과 저장(케이스 단위)
+#     case.phishing = bool(parsed.get("phishing", False))
+#     case.evidence = str(parsed.get("evidence", ""))
+#     case.defense_count = 0
+#     case.status = "completed"
+#     case.completed_at = datetime.now(timezone.utc)
+#     db.commit()
+#     db.refresh(case)
+
+#     return {"phishing": case.phishing, "evidence": case.evidence, "defense_count": 0}

@@ -1,16 +1,23 @@
 # app/services/agent/tools_mcp.py
 from __future__ import annotations
 from typing import Any, Dict, Optional, Literal
-import os, json, asyncio
-from pydantic import BaseModel, ValidationError
+import os, json
+from json import JSONDecoder
+import httpx
+from pydantic import BaseModel, Field, ValidationError
 from langchain_core.tools import tool
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.client.session import ClientSession
 from app.core.logging import get_logger
+import re
 
 logger = get_logger(__name__)
-# 서버는 정확히 /mcp (트레일링 슬래시 없음)
-MCP_HTTP_URL = os.getenv("MCP_HTTP_URL", "http://127.0.0.1:5177/mcp").rstrip("/")
+
+# ─────────────────────────────────────────────────────────
+# MCP 서버 베이스 URL
+#   - 권장: MCP_BASE_URL (예: http://127.0.0.1:5177)
+#   - 하위호환: MCP_HTTP_URL (예: http://127.0.0.1:5177/mcp) -> 베이스만 추출
+# ─────────────────────────────────────────────────────────
+_base_from_env = os.getenv("MCP_BASE_URL") or os.getenv("MCP_HTTP_URL", "http://127.0.0.1:5177")
+MCP_BASE_URL = _base_from_env.replace("/mcp", "").rstrip("/")
 
 # ───────── 입력 스키마 ─────────
 class Templates(BaseModel):
@@ -26,104 +33,117 @@ class MCPRunInput(BaseModel):
     victim_id: int
     scenario: Dict[str, Any]
     victim_profile: Dict[str, Any]
-    templates: Templates
+
+    # templates: dict 혹은 미제공 시 기본값
+    templates: Templates = Field(
+        default_factory=lambda: Templates(attacker="ATTACKER_PROMPT_V1", victim="VICTIM_PROMPT_V1")
+    )
+
+    # 모델: 여러 형태를 허용하고 아래에서 정규화
+    models: Optional[Dict[str, str]] = None
+    attacker_model: Optional[str] = None  # 호환 키
+    victim_model: Optional[str] = None    # 호환 키
+
     max_turns: int = 15
     guidance: Optional[Guidance] = None
     case_id_override: Optional[str] = None
     round_no: Optional[int] = None
+    combined_prompt: Optional[str] = None
 
-def _unwrap(obj: Any) -> Dict[str, Any]:
-    if isinstance(obj, (bytes, bytearray)):
-        obj = obj.decode()
-    if isinstance(obj, str):
-        obj = json.loads(obj)
-    if isinstance(obj, dict) and "data" in obj:
-        inner = obj["data"]
-        if isinstance(inner, str):
-            return json.loads(inner)
-        return inner
-    if not isinstance(obj, dict):
-        raise ValueError("Action Input은 JSON 객체여야 합니다.")
+# ───────── 유틸 ─────────
+def _unwrap(data: Any) -> Dict[str, Any]:
+    """
+    Tool Action Input으로 들어온 값을 '평평한(dict)' 형태로 반환.
+    - dict면 {"data": {...}} 이면 내부 {...}만 반환, 아니면 그대로
+    - str이면 첫 JSON 객체만 raw_decode로 파싱 후, {"data": {...}}면 내부만 반환
+    - 코드펜스/접두 텍스트/트레일링 문자 방어 포함
+    """
+    if isinstance(data, dict):
+        if set(data.keys()) == {"data"} and isinstance(data["data"], dict):
+            return data["data"]               # ✅ 최상위 'data' 벗기기
+        return data
+
+    if data is None:
+        raise ValueError("Action Input is None")
+
+    s = str(data).strip()
+
+    # 코드펜스 제거
+    if s.startswith("```"):
+        m = re.search(r"```(?:json)?\s*(.*?)```", s, re.S | re.I)
+        if m:
+            s = m.group(1).strip()
+
+    # "Action Input: ..." 같은 접두 텍스트 제거 → 첫 '{'부터
+    i = s.find("{")
+    if i > 0:
+        s = s[i:]
+
+    dec = JSONDecoder()
+    obj, end = dec.raw_decode(s)  # 첫 JSON만 파싱
+
+    # ✅ 문자열로 들어온 경우도 'data' 래퍼 벗기기
+    if isinstance(obj, dict) and set(obj.keys()) == {"data"} and isinstance(obj["data"], dict):
+        return obj["data"]
+
     return obj
 
-# ───────── MCP 호출기 ─────────
-async def _mcp_call_http(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    last_err = None
-    for attempt in range(3):
+def _post_api_simulate(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    MCP 서버 REST 엔드포인트 호출:
+      POST {MCP_BASE_URL}/api/simulate
+      Body: {"arguments": {...}}
+      Resp: SimulationResult(dict) 또는 {"ok":True,"result":{...}}
+    """
+    url = f"{MCP_BASE_URL}/api/simulate"
+    payload = {"arguments": arguments}
+    with httpx.Client(timeout=120.0) as client:
         try:
-            async with streamablehttp_client(MCP_HTTP_URL) as conn:
-                # 반환 타입 방어적 언패킹
-                if isinstance(conn, (tuple, list)):
-                    if len(conn) == 2:
-                        read, write = conn
-                    elif len(conn) == 3:
-                        read, write, _ = conn
-                    else:
-                        raise RuntimeError(f"Unexpected connection tuple size: {len(conn)}")
-                else:
-                    read = getattr(conn, "read", None) or getattr(conn, "reader", None)
-                    write = getattr(conn, "write", None) or getattr(conn, "writer", None)
-                    if not (read and write):
-                        raise RuntimeError("Unsupported streamablehttp_client return type")
-
-                async with ClientSession(read, write) as session:
-                    # 일부 환경에서 list_tools()가 초기화 타이밍 이슈를 냄 → echo로 가볍게 연결 체크
-                    try:
-                        await session.call_tool("system.echo", arguments={"ping": True})
-                    except Exception:
-                        # echo 없음/오류는 치명적이지 않음. 실제 툴 호출로 진행
-                        pass
-
-                    resp = await session.call_tool(tool_name, arguments=arguments)
-
-                    # 1) FastMCP가 content[0].text로 JSON 문자열을 줄 수 있음
-                    if resp.content and getattr(resp.content[0], "text", None):
-                        text = resp.content[0].text
-                        try:
-                            return json.loads(text)
-                        except Exception:
-                            # 서버가 텍스트만 준 경우
-                            return {"result": {"raw": text}}
-
-                    # 2) 또는 result dict 필드를 직접 줄 수도 있음
-                    if getattr(resp, "result", None):
-                        return {"result": resp.result}
-
-                    # 3) 마지막 fallback: content를 통째로 덤프
-                    return {"result": [c.model_dump() for c in (resp.content or [])]}
+            r = client.post(url, json=payload)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as he:
+            return {"ok": False, "error": "http_error", "status": he.response.status_code, "text": he.response.text}
         except Exception as e:
-            last_err = e
-            logger.warning(f"[MCP] call attempt={attempt+1} failed: {e}")
-            # 절대 time.sleep 사용 금지 (async 컨텍스트): 지수적 백오프
-            await asyncio.sleep(0.25 * (attempt + 1))
+            return {"ok": False, "error": "http_exception", "text": str(e)}
 
-    raise RuntimeError(f"MCP call failed after retries: {last_err}")
-
-def _run(coro):
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    else:
-        # sync 함수 컨텍스트에서 호출되므로, 현재 루프가 있으면 그냥 run_until_complete
-        return loop.run_until_complete(coro)
+        data = r.json()
+    except Exception:
+        return {"ok": False, "error": "invalid_json", "text": r.text}
+
+    # 서버가 {"ok":..., "result": {...}} 또는 곧바로 {...}를 줄 수 있음 → 정규화
+    if isinstance(data, dict) and "ok" in data:
+        return data
+    return {"ok": True, "result": data}
 
 # ───────── LangChain Tool ─────────
 def make_mcp_tools():
     @tool(
         "mcp.simulator_run",
-        description="외부 MCP 서버의 sim.simulate_dialogue 툴을 호출해 두-봇 시뮬레이션을 실행합니다."
+        description="MCP 서버의 POST /api/simulate 를 호출해 두-봇 시뮬레이션을 실행합니다."
     )
     def simulator_run(data: Any) -> Dict[str, Any]:
+        # 1) 입력 언랩 + 통짜 프롬프트 자동 구성
         payload = _unwrap(data)
+
+        # case_id 별칭 지원
+        if "case_id" in payload and "case_id_override" not in payload:
+            payload["case_id_override"] = payload["case_id"]
+
+        # compose_prompts 결과 자동 합치기(있을 때만)
+        ap = payload.get("attacker_prompt")
+        vp = payload.get("victim_prompt")
+        if ap and vp and "combined_prompt" not in payload:
+            payload["combined_prompt"] = f"[ATTACKER]\n{ap}\n[/ATTACKER]\n[VICTIM]\n{vp}\n[/VICTIM]"
 
         # 라운드1 가드: case_id 없이 guidance가 오면 무시
         round_no = payload.get("round_no")
-        case_id = payload.get("case_id") or payload.get("case_id_override")
+        case_id = payload.get("case_id_override")
         if payload.get("guidance") and not case_id and (round_no is None or int(round_no) <= 1):
             logger.info("[mcp.simulator_run] guidance before first run → ignored")
             payload.pop("guidance", None)
 
+        # 2) 1회만 검증
         try:
             model = MCPRunInput.model_validate(payload)
         except ValidationError as ve:
@@ -133,7 +153,20 @@ def make_mcp_tools():
                 "pydantic_errors": json.loads(ve.json()),
             }
 
-        args = {
+        # 3) 모델 키 정규화 (attacker_model/victim_model → models.attacker/victim)
+        eff_models: Dict[str, str] = {}
+        if isinstance(model.models, dict):
+            eff_models.update({k: v for k, v in model.models.items() if isinstance(v, str) and v})
+        if model.attacker_model:
+            eff_models["attacker"] = model.attacker_model
+        if model.victim_model:
+            eff_models["victim"] = model.victim_model
+        # 서버 기본값을 쓰고 싶으면 비워둘 수 있음
+        if eff_models:
+            logger.info(f"[MCP] using explicit models: {eff_models}")
+
+        # 4) 서버 스키마에 맞게 arguments 구성
+        args: Dict[str, Any] = {
             "offender_id": model.offender_id,
             "victim_id": model.victim_id,
             "scenario": model.scenario,
@@ -147,23 +180,30 @@ def make_mcp_tools():
             args["case_id_override"] = model.case_id_override
         if model.round_no:
             args["round_no"] = model.round_no
+        if model.combined_prompt:
+            args["combined_prompt"] = model.combined_prompt
+        # ★ 핵심: 개별 프롬프트도 같이 전달(서버가 최우선 사용)
+        if ap and vp:
+            args["attacker_prompt"] = ap
+            args["victim_prompt"] = vp
+        # 모델 전달(선택)
+        if eff_models:
+            args["models"] = eff_models
 
-        logger.info(f"[MCP] call sim.simulate_dialogue args={list(args.keys())} url={MCP_HTTP_URL}")
-        res = _run(_mcp_call_http("sim.simulate_dialogue", args))
+        logger.info(f"[MCP] POST /api/simulate keys={list(args.keys())} base={MCP_BASE_URL}")
 
-        # 서버 표준 응답 정규화
-        result = res.get("result") or res
-        # 서버가 헬퍼에서 {"ok": True/False, "result": {...}} 형태를 주는 경우 우선 확인
-        ok = res.get("ok", True)
-        if not ok:
-            # 서버에서 validation 실패/예외를 JSON으로 반환하는 경우 여기에 걸림
-            return {"ok": False, "error": result.get("error") or "mcp_error", "detail": result}
+        # 5) 호출 & 표준화
+        res = _post_api_simulate(args)
+        if not res.get("ok", True):
+            return res
 
-        cid = result.get("conversation_id") or result.get("case_id")
-        if not cid:
-            return {"ok": False, "error": "MCP 응답에 conversation_id/case_id 없음", "raw": res}
-
+        result = res.get("result") or {}
+        cid = result.get("conversation_id") or result.get("case_id") or (result.get("meta") or {}).get("conversation_id")
         total_turns = (result.get("stats") or {}).get("turns")
+
+        if not cid:
+            return {"ok": False, "error": "missing_conversation_id", "raw": result}
+
         return {
             "ok": True,
             "case_id": cid,
