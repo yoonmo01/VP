@@ -85,6 +85,7 @@ class _JudgeMakeInput(BaseModel):
     run_no: int = Field(1, ge=1)
     # 오케스트레이터가 바로 턴을 넘겨줄 수 있게 허용
     turns: Optional[List[Dict[str, Any]]] = None
+    log: Optional[Dict[str, Any]] = None
 
 class _GuidanceInput(BaseModel):
     kind: str = Field(..., pattern="^(P|A)$", description="지침 종류: 'P'(피해자) | 'A'(공격자)")
@@ -291,7 +292,11 @@ def make_admin_tools(db: Session, guideline_repo):
         # 1) Action Input으로 턴이 오면 그대로 사용
         turns: Optional[List[Dict[str, Any]]] = ji.turns
 
-        # 2) 없으면 MCP에서 가져오기 (DB 접근 금지)
+        # 2) 없으면 MCP에서 가져오기 (DB 접근 금지)\
+        if turns is None and ji.log and isinstance(ji.log, dict):
+            maybe = ji.log.get("turns")
+            if isinstance(maybe, list):
+                turns = maybe
         if turns is None:
             turns = _fetch_turns_from_mcp(ji.case_id, ji.run_no)
 
@@ -322,13 +327,16 @@ def make_admin_tools(db: Session, guideline_repo):
         verdict["risk"] = risk
 
         rec = "stop" if level == "critical" else "continue"
-        cont = verdict.get("continue") or {}
-        reason = cont.get("reason") or (
-            "위험도가 critical로 판정되어 시나리오를 종료합니다."
-            if rec == "stop" else
-            "위험도가 critical이 아니므로 수법 고도화/추가 라운드를 권고합니다."
-        )
-        verdict["continue"] = {"recommendation": rec, "reason": reason}
+        if level == "critical":
+            verdict["continue"] = {
+                "recommendation": "stop",
+                "reason": "위험도가 critical로 판정되어 시뮬레이션을 종료합니다."
+            }
+        else:
+            verdict["continue"] = {
+                "recommendation": "continue",
+                "reason": "위험도가 critical이 아니므로 다음 라운드를 진행합니다."
+            }
         # ───────────────────────────────────────────────
 
         persisted = _persist_verdict(db, case_id=ji.case_id, run_no=ji.run_no, verdict=verdict)

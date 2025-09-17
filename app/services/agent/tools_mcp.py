@@ -123,7 +123,7 @@ def make_mcp_tools():
         description="MCP 서버의 POST /api/simulate 를 호출해 두-봇 시뮬레이션을 실행합니다."
     )
     def simulator_run(data: Any) -> Dict[str, Any]:
-        # 1) 입력 언랩 + 통짜 프롬프트 자동 구성
+        # ---------- 1) 입력 언랩 + 통짜 프롬프트 자동 구성 ----------
         payload = _unwrap(data)
 
         # case_id 별칭 지원
@@ -143,7 +143,7 @@ def make_mcp_tools():
             logger.info("[mcp.simulator_run] guidance before first run → ignored")
             payload.pop("guidance", None)
 
-        # 2) 1회만 검증
+        # ---------- 2) 1회만 검증 ----------
         try:
             model = MCPRunInput.model_validate(payload)
         except ValidationError as ve:
@@ -153,7 +153,7 @@ def make_mcp_tools():
                 "pydantic_errors": json.loads(ve.json()),
             }
 
-        # 3) 모델 키 정규화 (attacker_model/victim_model → models.attacker/victim)
+        # ---------- 3) 모델 키 정규화 (attacker_model/victim_model → models.attacker/victim) ----------
         eff_models: Dict[str, str] = {}
         if isinstance(model.models, dict):
             eff_models.update({k: v for k, v in model.models.items() if isinstance(v, str) and v})
@@ -161,11 +161,10 @@ def make_mcp_tools():
             eff_models["attacker"] = model.attacker_model
         if model.victim_model:
             eff_models["victim"] = model.victim_model
-        # 서버 기본값을 쓰고 싶으면 비워둘 수 있음
         if eff_models:
             logger.info(f"[MCP] using explicit models: {eff_models}")
 
-        # 4) 서버 스키마에 맞게 arguments 구성
+        # ---------- 4) 서버 스키마에 맞게 arguments 구성 ----------
         args: Dict[str, Any] = {
             "offender_id": model.offender_id,
             "victim_id": model.victim_id,
@@ -175,6 +174,8 @@ def make_mcp_tools():
             "max_turns": model.max_turns,
         }
         if model.guidance:
+            # 서버가 guidance 키를 'kind'로 요구한다면 아래 한 줄만 바꾸면 됨:
+            # args["guidance"] = {"kind": model.guidance.type, "text": model.guidance.text}
             args["guidance"] = {"type": model.guidance.type, "text": model.guidance.text}
         if model.case_id_override:
             args["case_id_override"] = model.case_id_override
@@ -182,7 +183,7 @@ def make_mcp_tools():
             args["round_no"] = model.round_no
         if model.combined_prompt:
             args["combined_prompt"] = model.combined_prompt
-        # ★ 핵심: 개별 프롬프트도 같이 전달(서버가 최우선 사용)
+        # ★ 개별 프롬프트도 같이 전달(서버가 최우선 사용)
         if ap and vp:
             args["attacker_prompt"] = ap
             args["victim_prompt"] = vp
@@ -192,23 +193,51 @@ def make_mcp_tools():
 
         logger.info(f"[MCP] POST /api/simulate keys={list(args.keys())} base={MCP_BASE_URL}")
 
-        # 5) 호출 & 표준화
+        # ---------- 5) 호출 ----------
         res = _post_api_simulate(args)
-        if not res.get("ok", True):
+
+        # 서버가 실패 형식으로 주는 경우 그대로 반환
+        if isinstance(res, dict) and res.get("ok") is False:
             return res
 
-        result = res.get("result") or {}
-        cid = result.get("conversation_id") or result.get("case_id") or (result.get("meta") or {}).get("conversation_id")
-        total_turns = (result.get("stats") or {}).get("turns")
+        # ---------- 6) 응답 평탄화(핵심) ----------
+        # 서버 응답은 대개 {"result": {...}} 또는 {"raw": {"result": {...}}} 형태일 수 있다.
+        result = None
+        if isinstance(res, dict):
+            if isinstance(res.get("result"), dict):
+                result = res["result"]
+            elif isinstance(res.get("raw"), dict) and isinstance(res["raw"].get("result"), dict):
+                result = res["raw"]["result"]
+
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "bad_simulator_payload", "raw": res}
+
+        # 여러 경로에서 conversation_id를 튼튼하게 추출
+        cid = (
+            result.get("conversation_id")
+            or result.get("case_id")
+            or (result.get("meta") or {}).get("conversation_id")
+        )
 
         if not cid:
+            # 과거 코드에서는 이 지점에서 ok: False를 반환했기 때문에 항상 실패처럼 보였을 수 있음
             return {"ok": False, "error": "missing_conversation_id", "raw": result}
 
+        turns = result.get("turns") or []
+        stats = result.get("stats") or {}
+        ended_by = result.get("ended_by")
+        meta = result.get("meta") or {}
+
+        # ---------- 7) 표준화된 성공 응답 ----------
         return {
             "ok": True,
             "case_id": cid,
-            "total_turns": total_turns,
-            "result": result,
+            "turns": turns,
+            "stats": stats,
+            "ended_by": ended_by,
+            "meta": meta,
+            "log": result,        # ★ admin 판단에 그대로 넘길 전체 로그
+            "total_turns": stats.get("turns"),
         }
 
     return [simulator_run]
