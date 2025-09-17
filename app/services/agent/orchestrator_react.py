@@ -267,7 +267,7 @@ class ThoughtCapture(BaseCallbackHandler):
 
 
 # ─────────────────────────────────────────────────────────
-# ReAct 시스템 프롬프트 (툴별 입력 규칙 명확화)
+# ReAct 시스템 프롬프트 (툴별 입력 규칙 명확화 + 종결 후 예방책 1회)
 # ─────────────────────────────────────────────────────────
 REACT_SYS = (
     "당신은 보이스피싱 시뮬레이션 오케스트레이터입니다.\n"
@@ -301,6 +301,11 @@ REACT_SYS = (
     "  • [mcp.simulator_run] Action Input은 **최상위 언랩 JSON**이다. (예: {{\"offender_id\":..., \"victim_id\":..., ...}})\n"
     "    절대 'data'로 감싸지 말 것.\n"
     "  • [admin.* / sim.*] Action Input은 **{{\"data\": {{...}}}} 래핑**을 사용한다.\n"
+    "\n"
+    "▼ 종료 후(단 한 번)\n"
+    "  • 모든 라운드가 끝나면 **오직 한 번만** admin.make_prevention 을 호출하여 최종 예방책을 생성한다.\n"
+    "    입력에는 누적된 대화 {{turns}}, 각 라운드 판정 목록 {{judgements}}, 실제 적용된 지침 목록 {{guidances}} 를 넣고,\n"
+    "    지정 스키마(personalized_prevention)의 JSON만 반환하도록 한다. 라운드 중간에는 호출 금지.\n"
     "\n"
     "▼ 오류/예외 복구 규칙\n"
     "  • 라운드1에서 case_id 추출에 실패하면 mcp.latest_case(offender_id, victim_id) 를 호출해 최신 case_id 를 복구한다.\n"
@@ -377,6 +382,11 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
     rounds_done = 0
     case_id = ""
 
+    # ★ 누적용 컨테이너 (최종예방책 1회 생성을 위해)
+    guidance_history: List[Dict[str, Any]] = []
+    judgements_history: List[Dict[str, Any]] = []
+    turns_all: List[Dict[str, str]] = []
+
     try:
         # 1) 프롬프트 패키지 (DB 조립)
         pkg = build_prompt_package_from_payload(
@@ -392,7 +402,8 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
 
         offender_id = int(req.offender_id or 0)
         victim_id = int(req.victim_id or 0)
-        max_rounds = max(2, min(req.round_limit or 4, 5))  # 2~5
+        # max_rounds = max(2, min(req.round_limit or 4, 5))  # 2~5
+        max_rounds = 3
 
         guidance_kind: Optional[str] = None
         guidance_text: Optional[str] = None
@@ -424,7 +435,14 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                     "round_no": round_no,
                 })
                 if guidance_kind and guidance_text:
-                    sim_payload["guidance"] = _normalize_guidance({"type": guidance_kind, "text": guidance_text})
+                    normalized = _normalize_guidance({"type": guidance_kind, "text": guidance_text})
+                    sim_payload["guidance"] = normalized
+                    # ★ 실제 적용된 지침(해당 라운드 번호)에 대해서만 히스토리 기록
+                    guidance_history.append({
+                        "run_no": round_no,
+                        "kind": normalized.get(EXPECT_GUIDANCE_KEY),
+                        "text": normalized.get("text", "")
+                    })
 
             # forbid 대비: 허용키만 유지 + None 제거
             allowed_keys = [
@@ -541,10 +559,12 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
 
             rounds_done += 1
 
-            # 판정용 turns 확보
+            # 판정용 turns 확보 및 누적
             turns = sim_dict.get("turns") or (sim_dict.get("log") or {}).get("turns") or []
             logger.info("[SIM] case_id=%s turns=%s ended_by=%s",
                         sim_dict.get("case_id"), len(turns), sim_dict.get("ended_by"))
+            if isinstance(turns, list):
+                turns_all.extend(turns)
 
             # ── (B) 판정 생성: 방금 턴으로 직접 판단 ──
             make_payload = {
@@ -591,6 +611,14 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 round_no, phishing, risk_lvl, risk_scr, cont_rec, _truncate(cont_msg, 200),
             )
 
+            # ── (B-2) 판정 히스토리 누적 ──
+            judgements_history.append({
+                "run_no": round_no,
+                "phishing": phishing,
+                "risk": risk_obj,
+                "evidence": judgement.get("evidence") or reason
+            })
+
             # ── (C) 다음 라운드를 위한 지침 선택 ──
             if round_no < max_rounds:
                 guidance_kind = "P" if phishing else "A"
@@ -609,7 +637,7 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 used_tools.append("admin.pick_guidance")
 
-                # Observation 기반으로 지침 텍스트 뽑기
+                # Observation 기반으로 지침 텍스트 뽑기 (다음 라운드 적용 예정)
                 pick_obs = _last_observation(cap, "admin.pick_guidance")
                 guidance_text = _extract_guidance_text(pick_obs) or _extract_guidance_text(res_pick) or "기본 예방 수칙을 따르세요."
                 logger.info("[GuidancePicked] round=%s | kind=%s | text=%s", round_no, guidance_kind, _truncate(guidance_text, 300))
@@ -629,6 +657,31 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 break
 
+        # ---- (F) 최종예방책: 모든 라운드 종료 후 단 한 번 호출 ----
+        prevention_payload = {
+            "data": {
+                "case_id": case_id,
+                "rounds": rounds_done,
+                "turns": turns_all,
+                "judgements": judgements_history,
+                "guidances": guidance_history,
+                "format": "personalized_prevention"
+            }
+        }
+        res_prev = ex.invoke(
+            {"input": "admin.make_prevention 호출.\n" + json.dumps(prevention_payload, ensure_ascii=False)},
+            callbacks=[cap],
+        )
+        used_tools.append("admin.make_prevention")
+
+        prev_obs = _last_observation(cap, "admin.make_prevention")
+        prev_dict = _loose_parse_json(prev_obs) or _loose_parse_json(res_prev)
+        if not prev_dict.get("ok"):
+            logger.error("[PreventionFail] obs=%s | res=%s", _truncate(prev_obs), _truncate(res_prev))
+            prevention_obj = {}
+        else:
+            prevention_obj = prev_dict.get("personalized_prevention") or {}
+
         return {
             "status": "success",
             "case_id": case_id,
@@ -638,6 +691,7 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
             "used_tools": used_tools,
             "mcp_used": True,
             "tavily_used": tavily_used,
+            "personalized_prevention": prevention_obj,  # ★ 최종예방책 포함
         }
     finally:
         try:

@@ -8,6 +8,7 @@ import os
 import json
 import ast
 import httpx
+import re
 
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
@@ -22,6 +23,9 @@ from app.core.logging import get_logger
 # 만약 기존 summarize_run_full이 (db, case_id, run_no)만 받는다면,
 # 해당 파일도 turns 기반 시그니처로 업데이트하세요.
 from app.services.admin_summary import summarize_run_full  # turns 기반 사용 권장
+
+# ★ 추가: LLM 호출용
+from app.services.llm_providers import agent_chat
 
 logger = get_logger(__name__)
 
@@ -97,6 +101,16 @@ class _SavePreventionInput(BaseModel):
     run_no: int = Field(1, ge=1)
     summary: str
     steps: List[str] = Field(default_factory=list)
+
+# ★ 추가: 최종예방책 생성 입력
+class _MakePreventionInput(BaseModel):
+    case_id: UUID
+    rounds: int = Field(..., ge=1)
+    turns: List[Dict[str, Any]] = Field(default_factory=list)
+    judgements: List[Dict[str, Any]] = Field(default_factory=list)
+    guidances: List[Dict[str, Any]] = Field(default_factory=list)
+    # 포맷은 고정적으로 personalized_prevention을 기대
+    format: str = Field("personalized_prevention")
 
 # ─────────────────────────────────────────────────────────
 # MCP에서 대화 턴(JSON) 가져오기
@@ -274,6 +288,32 @@ def _read_persisted_verdict(db: Session, *, case_id: UUID, run_no: int) -> Optio
     return None
 
 # ─────────────────────────────────────────────────────────
+# LLM 결과 파싱 보조
+# ─────────────────────────────────────────────────────────
+def _safe_json_parse(text: str) -> Optional[Dict[str, Any]]:
+    """코드펜스/설명 섞여도 JSON만 뽑아 파싱 시도."""
+    text = text.strip()
+    # ```json ... ``` 제거
+    fence = re.compile(r"^```(?:json)?\s*(\{.*\})\s*```$", re.S)
+    m = fence.match(text)
+    if m:
+        text = m.group(1).strip()
+    # 최외곽 { ... } 추출
+    if not (text.startswith("{") and text.endswith("}")):
+        m2 = re.search(r"\{.*\}$", text, re.S)
+        if m2:
+            text = m2.group(0)
+    try:
+        return json.loads(text)
+    except Exception:
+        try:
+            obj = ast.literal_eval(text)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            return None
+
+# ─────────────────────────────────────────────────────────
 # 툴 팩토리
 # ─────────────────────────────────────────────────────────
 def make_admin_tools(db: Session, guideline_repo):
@@ -292,7 +332,7 @@ def make_admin_tools(db: Session, guideline_repo):
         # 1) Action Input으로 턴이 오면 그대로 사용
         turns: Optional[List[Dict[str, Any]]] = ji.turns
 
-        # 2) 없으면 MCP에서 가져오기 (DB 접근 금지)\
+        # 2) 없으면 MCP에서 가져오기 (DB 접근 금지)
         if turns is None and ji.log and isinstance(ji.log, dict):
             maybe = ji.log.get("turns")
             if isinstance(maybe, list):
@@ -317,7 +357,7 @@ def make_admin_tools(db: Session, guideline_repo):
         score = 0 if score < 0 else (100 if score > 100 else score)
         risk["score"] = score
 
-        level = str((risk.get("level") or "")).lower()
+        level = str((risk.get("level") or "").lower())
         if level not in {"low", "medium", "high", "critical"}:
             level = ("critical" if score >= 75 else
                      "high"     if score >= 50 else
@@ -326,7 +366,6 @@ def make_admin_tools(db: Session, guideline_repo):
         risk["level"] = level
         verdict["risk"] = risk
 
-        rec = "stop" if level == "critical" else "continue"
         if level == "critical":
             verdict["continue"] = {
                 "recommendation": "stop",
@@ -404,6 +443,78 @@ def make_admin_tools(db: Session, guideline_repo):
             text, title = guideline_repo.pick_attack()
         return {"type": gi.kind, "title": title, "text": text}
 
+    # ★ 신규: 최종예방책 생성
+    @tool(
+        "admin.make_prevention",
+        args_schema=SingleData,
+        description=(
+            "대화(turns)+판단(judgements)+지침(guidances)로 최종 예방책(personalized_prevention) JSON을 생성한다. "
+            "Action Input 예: {'data': {'case_id':UUID,'rounds':int,'turns':[...],'judgements':[...],'guidances':[...],'format':'personalized_prevention'}}"
+        )
+    )
+    def make_prevention(data: Any) -> Dict[str, Any]:
+        payload = _unwrap_data(data)
+        try:
+            pi = _MakePreventionInput(**payload)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"MakePreventionInput 검증 실패: {e}")
+
+        llm = agent_chat(temperature=0.2)
+
+        # 스키마 힌트
+        schema_hint = {
+            "personalized_prevention": {
+                "summary": "string (2~3문장)",
+                "analysis": {
+                    "outcome": "success|fail",
+                    "reasons": ["string", "string", "string"],
+                    "risk_level": "low|medium|high"
+                },
+                "steps": ["명령형 한국어 단계 5~9개"],
+                "tips": ["체크리스트형 팁 3~6개"]
+            }
+        }
+
+        system = (
+            "너는 보이스피싱 예방 전문가다. 입력된 대화/판단/지침을 바탕으로, "
+            "아래 스키마에 맞춘 JSON만 출력하라. 한국어로 간결하고 실용적으로 작성하라. "
+            "코드블럭/주석/설명 금지. 오직 JSON 한 개만 반환."
+        )
+        user = {
+            "case_id": str(pi.case_id),
+            "rounds": pi.rounds,
+            "guidances": pi.guidances,
+            "judgements": pi.judgements,
+            "turns": pi.turns,
+            "format": pi.format,
+            "schema": schema_hint
+        }
+
+        messages = [
+            ("system", system),
+            ("human",
+             "다음 입력을 바탕으로 'personalized_prevention' 키 하나만 있는 JSON을 출력하라.\n"
+             + json.dumps(user, ensure_ascii=False))
+        ]
+
+        try:
+            res = llm.invoke(messages)
+            text = getattr(res, "content", str(res))
+            parsed = _safe_json_parse(text) or {}
+            if "personalized_prevention" not in parsed:
+                return {
+                    "ok": False,
+                    "error": "missing_key_personalized_prevention",
+                    "raw": text[:1200]
+                }
+            return {
+                "ok": True,
+                "case_id": str(pi.case_id),
+                "personalized_prevention": parsed["personalized_prevention"]
+            }
+        except Exception as e:
+            return {"ok": False, "error": f"llm_error: {e!s}"}
+
     @tool(
         "admin.save_prevention",
         args_schema=SingleData,
@@ -429,4 +540,5 @@ def make_admin_tools(db: Session, guideline_repo):
         db.commit()
         return str(obj.id)
 
-    return [make_judgement, judge, pick_guidance, save_prevention]
+    # 기존 + 신규 툴 모두 반환
+    return [make_judgement, judge, pick_guidance, make_prevention, save_prevention]
