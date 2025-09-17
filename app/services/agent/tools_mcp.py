@@ -49,7 +49,8 @@ class MCPRunInput(BaseModel):
     case_id_override: Optional[str] = None
     round_no: Optional[int] = None
     combined_prompt: Optional[str] = None
-
+class SingleData(BaseModel):
+    data: dict = Field(...)
 # ───────── 유틸 ─────────
 def _unwrap(data: Any) -> Dict[str, Any]:
     """
@@ -88,6 +89,20 @@ def _unwrap(data: Any) -> Dict[str, Any]:
 
     return obj
 
+# def _unwrap_forgiving(obj: dict) -> dict:
+#     """
+#     {"data":{...}, "guidance":..., "round_no":..., "case_id_override":...}
+#     처럼 섞여 들어와도 data 안으로 병합해서 돌려줌.
+#     """
+#     if "data" in obj and isinstance(obj["data"], dict):
+#         merged = dict(obj["data"])
+#         # 루트에 잘못 나온 키들을 흡수
+#         for k in ("case_id_override", "round_no", "guidance"):
+#             if k in obj and k not in merged:
+#                 merged[k] = obj[k]
+#         return merged
+#     return obj
+
 def _post_api_simulate(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """
     MCP 서버 REST 엔드포인트 호출:
@@ -125,6 +140,7 @@ def make_mcp_tools():
     def simulator_run(data: Any) -> Dict[str, Any]:
         # ---------- 1) 입력 언랩 + 통짜 프롬프트 자동 구성 ----------
         payload = _unwrap(data)
+
 
         # case_id 별칭 지원
         if "case_id" in payload and "case_id_override" not in payload:

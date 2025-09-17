@@ -30,10 +30,16 @@ from app.services.prompt_integrator_db import build_prompt_package_from_payload
 
 logger = get_logger(__name__)
 
+# ─────────────────────────────────────────────────────────
+# 전역 설정 / 헬퍼 (★ 추가)
+# ─────────────────────────────────────────────────────────
+# 서버가 guidance 키로 무엇을 기대하는지 고정 ("type" 또는 "kind")
+EXPECT_GUIDANCE_KEY = "type"   # ← 서버가 kind를 요구하면 "kind"로 변경
 
-# ─────────────────────────────────────────────────────────
-# 헬퍼들
-# ─────────────────────────────────────────────────────────
+# mcp.simulator_run은 Action Input 최상위 언랩을 사용
+EXPECT_MCP_DATA_WRAPPER = False  # True면 {"data": {...}} 래핑, False면 언랩
+
+
 def _truncate(obj: Any, max_len: int = 800) -> Any:
     """긴 문자열을 로그용으로 안전하게 자르기"""
     try:
@@ -151,6 +157,78 @@ def _last_observation(cap: "ThoughtCapture", tool_name: str) -> Any:
     return None
 
 
+# ★ 추가: dict 보장(모델/dict/TypedDict까지 deep copy)
+def _as_dict(x):
+    import copy
+    if hasattr(x, "model_dump"):
+        return x.model_dump()
+    return copy.deepcopy(x)
+
+
+# ★ 추가: guidance 정규화(문자열 방지, 키 통일, 값 검증)
+def _normalize_guidance(g: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not g:
+        return None
+    if isinstance(g, str):
+        try:
+            g = json.loads(g)
+        except Exception:
+            raise HTTPException(400, detail="guidance는 문자열이 아닌 객체(dict)여야 합니다.")
+    g = dict(g)
+    val = g.get("kind") or g.get("type")
+    text = g.get("text", "")
+    if val is None:
+        raise HTTPException(400, detail="guidance.{kind|type} 누락")
+    if val not in ("P", "A"):
+        raise HTTPException(400, detail=f"guidance 값은 'P' 또는 'A' 여야 합니다. got={val}")
+    return {EXPECT_GUIDANCE_KEY: val, "text": text}
+
+
+# ★ 추가: payload 클린( None 제거 / forbid 대비 허용키만 유지 )
+def _clean_payload(
+    d: Dict[str, Any],
+    *,
+    allow_extras: bool = True,
+    allowed_keys: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    out = {k: v for k, v in d.items() if v is not None}
+    if not allow_extras and allowed_keys is not None:
+        out = {k: v for k, v in out.items() if k in allowed_keys}
+    return out
+
+
+# ★ 추가: mcp.simulator_run용 Action Input 생성기 (언랩/래핑 선택)
+def _make_action_input_for_mcp(payload: Dict[str, Any]) -> str:
+    if EXPECT_MCP_DATA_WRAPPER:
+        return json.dumps({"data": payload}, ensure_ascii=False)
+    else:
+        return json.dumps(payload, ensure_ascii=False)
+
+
+# ★ 추가: 래핑으로 넣어서 pydantic이 최상위 필드 missing이라 말할 때 탐지
+def _looks_like_missing_top_fields_error(err_obj: Dict[str, Any]) -> bool:
+    try:
+        pes = err_obj.get("pydantic_errors") or []
+        text = json.dumps(err_obj, ensure_ascii=False)
+        has_data_literal = '"data":' in text or "'data':" in text
+        miss_top = any(
+            e.get("type") == "missing"
+            and isinstance(e.get("loc"), list)
+            and e["loc"][0] in ("offender_id", "victim_id", "scenario", "victim_profile")
+            for e in pes
+        )
+        return has_data_literal and miss_top
+    except Exception:
+        return False
+
+
+def _get_tool(executor: AgentExecutor, name: str):
+    for t in executor.tools:
+        if t.name == name:
+            return t
+    return None
+
+
 # ─────────────────────────────────────────────────────────
 # LangChain 콜백: Thought/Action/Observation 캡처
 # ─────────────────────────────────────────────────────────
@@ -189,7 +267,7 @@ class ThoughtCapture(BaseCallbackHandler):
 
 
 # ─────────────────────────────────────────────────────────
-# ReAct 시스템 프롬프트 (강한 레일가드 / JSON 예시 이스케이프)
+# ReAct 시스템 프롬프트 (툴별 입력 규칙 명확화)
 # ─────────────────────────────────────────────────────────
 REACT_SYS = (
     "당신은 보이스피싱 시뮬레이션 오케스트레이터입니다.\n"
@@ -202,7 +280,7 @@ REACT_SYS = (
     "    3) mcp.simulator_run 을 실행한다. (★ guidance 금지)\n"
     "    4) admin.make_judgement 를 호출해 **판정/리스크/취약성/계속여부**를 생성한다.\n"
     "       └ 이때 (case_id, run_no)만 보내지 말고, 반드시 방금 mcp.simulator_run Observation에서 받은\n"
-    "          {{\"turns\": [...}}] 또는 {{\"log\": {{...}}}} 를 함께 전달한다.\n"
+    "          {{\"turns\": [...]}} 또는 {{\"log\": {{...}}}} 를 함께 전달한다.\n"
     "    5) 필요 시 admin.pick_guidance 로 다음 라운드 지침을 고른다.\n"
     "  [라운드2~N]\n"
     "    6) admin.pick_guidance 로 다음 라운드에 쓸 지침을 고른다. (type='P' 또는 'A')\n"
@@ -218,23 +296,21 @@ REACT_SYS = (
     "  • offender_id / victim_id / scenario / victim_profile / templates 는 라운드 간 불변. (값 변경 금지)\n"
     "  • 동일 case_id 유지: 라운드1에서 받은 case_id 를 2라운드부터 case_id_override 로 반드시 넣는다.\n"
     "  • round_no 는 2부터 1씩 증가하는 정수로 설정한다.\n"
-    "  • 도구 Action Input 은 한 줄 JSON 이고, **최상위 키는 반드시 \"data\" 단 하나만** 존재해야 한다.\n"
-    "    **'data' 바깥에 어떤 키도 추가하지 말 것.** (mcp.simulator_run 2라운드부터 case_id_override/round_no/guidance도\n"
-    "    반드시 data 내부에 둘 것)\n"
-    "  • 절대 도구를 호출하지 않고 결과를 직접 생성/요약하지 말 것.\n"
-    "  • 최소 2라운드는 반드시 수행한다.\n"
-    "  • 조기 종료는 위험도(level)가 'critical'일 때만 가능하며, 이 경우에도 2라운드 이상 수행한 뒤 종료한다.\n"
-
+    "\n"
+    "▼ 도구별 Action Input 규칙\n"
+    "  • [mcp.simulator_run] Action Input은 **최상위 언랩 JSON**이다. (예: {{\"offender_id\":..., \"victim_id\":..., ...}})\n"
+    "    절대 'data'로 감싸지 말 것.\n"
+    "  • [admin.* / sim.*] Action Input은 **{{\"data\": {{...}}}} 래핑**을 사용한다.\n"
     "\n"
     "▼ 오류/예외 복구 규칙\n"
     "  • 라운드1에서 case_id 추출에 실패하면 mcp.latest_case(offender_id, victim_id) 를 호출해 최신 case_id 를 복구한다.\n"
-    "  • 도구가 JSON 파싱 오류를 반환하면, 같은 JSON을 수정 없이 재시도하지 말고 스키마(최상위 'data', 허용 키)를 점검한 뒤 올바른 형식으로 재호출한다.\n"
+    "  • 도구가 JSON 파싱 오류를 반환하면, 같은 JSON을 수정 없이 재시도하지 말고 스키마(최상위 언랩 vs 'data' 래핑)를 점검한 뒤 올바른 형식으로 재호출한다.\n"
     "  • 동일 (case_id, run, turn_index) 중복 오류가 발생하면 round_no 설정을 점검한다. (현재 라운드 번호를 정확히 넣을 것)\n"
     "\n"
     "▼ 출력 포맷(반드시 준수)\n"
     "  Thought: 현재 판단/계획(간결히)\n"
     "  Action: [사용할_도구_이름]\n"
-    "  Action Input: {{\"data\": {{...}}}}  # JSON 한 줄, 최상위 'data'\n"
+    "  Action Input: (툴별 규칙을 따른 JSON 한 줄)\n"
     "  Observation: 도구 결과\n"
     "  ... 필요시 반복 ...\n"
     "  Final Answer: 최종 요약(최종 case_id, 총 라운드 수, 각 라운드 판정 요약 포함)\n"
@@ -243,17 +319,18 @@ REACT_SYS = (
 
 def build_agent_and_tools(db: Session, use_tavily: bool) -> Tuple[AgentExecutor, Any]:
     llm = agent_chat(temperature=0.2)
+    logger.info("[AgentLLM] model=%s", getattr(llm, "model_name", "unknown"))
 
     tools: List = []
     tools += make_sim_tools(db)
-    
+
     mcp_res = make_mcp_tools()
     if isinstance(mcp_res, tuple):
         mcp_tools, mcp_manager = mcp_res
     else:
         mcp_tools, mcp_manager = mcp_res, None
     tools += mcp_tools
-    
+
     tools += make_admin_tools(db, GuidelineRepoDB(db))
     if use_tavily:
         tools += make_tavily_tools()
@@ -270,7 +347,7 @@ def build_agent_and_tools(db: Session, use_tavily: bool) -> Tuple[AgentExecutor,
                 "아래 포맷을 정확히 따르세요. 포맷 외 임의 텍스트/코드펜스/주석 금지.\n"
                 "Thought: 한 줄\n"
                 "Action: 도구이름  (예: mcp.simulator_run)\n"
-                "Action Input: {{\"data\": {{...}}}}  \n"
+                "Action Input: (툴별 규칙)\n"
                 "Observation: (도구 출력)\n"
                 "... 반복 ...\n"
                 "Final Answer: 결론\n\n"
@@ -315,32 +392,46 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
 
         offender_id = int(req.offender_id or 0)
         victim_id = int(req.victim_id or 0)
-        max_rounds = max(2, min(req.round_limit or 3, 5))  # 2~5
+        max_rounds = max(2, min(req.round_limit or 4, 5))  # 2~5
 
         guidance_kind: Optional[str] = None
         guidance_text: Optional[str] = None
 
+        # dict 보장
+        scenario_base = _as_dict(scenario)
+        victim_profile_base = _as_dict(victim_profile)
+        templates_base = _as_dict(templates)
+
         base_payload: Dict[str, Any] = {
             "offender_id": offender_id,
             "victim_id": victim_id,
-            "scenario": scenario,
-            "victim_profile": victim_profile,
-            "templates": templates,
+            "scenario": scenario_base,
+            "victim_profile": victim_profile_base,
+            "templates": templates_base,  # 스키마에 없다면 allowed_keys에서 제거
             "max_turns": req.max_turns,
         }
 
         for round_no in range(1, max_rounds + 1):
             # ---- (A) 시뮬레이션 실행 ----
-
             sim_payload: Dict[str, Any] = dict(base_payload)
 
             if round_no >= 2:
+                if not case_id:
+                    logger.error("round>=2 인데 case_id가 없습니다. 라운드1 결과 저장/파싱 확인 요망.")
+                    raise HTTPException(status_code=500, detail="missing case_id for subsequent rounds")
                 sim_payload.update({
                     "case_id_override": case_id,
                     "round_no": round_no,
                 })
                 if guidance_kind and guidance_text:
-                    sim_payload["guidance"] = {"type": guidance_kind, "text": guidance_text}
+                    sim_payload["guidance"] = _normalize_guidance({"type": guidance_kind, "text": guidance_text})
+
+            # forbid 대비: 허용키만 유지 + None 제거
+            allowed_keys = [
+                "offender_id","victim_id","scenario","victim_profile","templates","max_turns",
+                "case_id_override","round_no","guidance"
+            ]
+            sim_payload = _clean_payload(sim_payload, allow_extras=False, allowed_keys=allowed_keys)
 
             # 스냅샷 로그
             snapshot = {
@@ -355,70 +446,86 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "templates": {
                     "attacker": sim_payload.get("templates", {}).get("attacker", ""),
                     "victim": sim_payload.get("templates", {}).get("victim", ""),
-                },
+                } if "templates" in sim_payload else {},
                 "max_turns": sim_payload.get("max_turns"),
             }
             logger.info("[PromptSnapshot] %s", json.dumps(_truncate(snapshot), ensure_ascii=False))
 
-            required = ["offender_id","victim_id","scenario","victim_profile","templates","max_turns"]
+            # 필수키 점검
+            required = ["offender_id","victim_id","scenario","victim_profile","max_turns"]
             missing = [k for k in required if k not in sim_payload]
             if missing:
                 logger.error("[mcp.simulator_run] missing base keys: %s | sim_payload=%s",
                             missing, json.dumps(sim_payload, ensure_ascii=False)[:800])
                 raise HTTPException(status_code=500, detail=f"sim payload missing: {missing}")
 
-            # 강제 주입 JSON (최상위 data만 존재)
-            injected_json = json.dumps({"data": sim_payload}, ensure_ascii=False)
-
+            # ====== mcp.simulator_run 호출 (언랩 우선) ======
             def _parsed_agent_input(x):
                 from json import JSONDecoder
                 if isinstance(x, str):
                     try:
                         return JSONDecoder().raw_decode(x.strip())[0]
                     except Exception:
-                        pass
+                        return x
                 return x
 
-            # 1차 호출: 'data' 바깥 금지 명시
-            llm_call = {
-                "input": (
-                    "아래 JSON이 **Action Input 전체**다. 이 JSON을 그대로 사용하고, "
-                    "**'data' 바깥에 어떤 키도 추가하지 말라.** 반드시 아래 JSON 한 줄만 출력하라.\n"
-                    "Action: mcp.simulator_run\n"
-                    f"Action Input: {injected_json}"
-                )
-            }
-            res_run = ex.invoke(llm_call, callbacks=[cap])
-            used_tools.append("mcp.simulator_run")
+            def _invoke_mcp_simulator_via_agent(action_input: str):
+                llm_call = {
+                    "input": (
+                        "아래 JSON이 **Action Input 전체**다. 이 JSON을 그대로 사용하고, "
+                        "추가/변형 금지. 반드시 아래 JSON 한 줄만 출력하라.\n"
+                        "Action: mcp.simulator_run\n"
+                        f"Action Input: {action_input}"
+                    )
+                }
+                res = ex.invoke(llm_call, callbacks=[cap])
+                used_tools.append("mcp.simulator_run")
+                return res
 
-            # 불일치 시 1회 재시도
+            # 언랩/래핑 설정에 맞춰 Action Input 생성
+            action_input_json = _make_action_input_for_mcp(sim_payload)
+
+            # 1차 호출 (에이전트 경유)
+            res_run = _invoke_mcp_simulator_via_agent(action_input_json)
+
+            # 도구 입력 불일치시 1회 재시도(그대로 다시)
             if cap.last_tool == "mcp.simulator_run":
                 try:
                     agent_input = _parsed_agent_input(cap.last_tool_input)
-                    intended = {"data": sim_payload}
+                    intended = json.loads(action_input_json)
                     if agent_input != intended:
                         logger.warning(
                             "[ToolInputMismatch] intended!=actual | intended=%s | actual=%s",
                             json.dumps(_truncate(intended), ensure_ascii=False),
                             json.dumps(_truncate(agent_input), ensure_ascii=False),
                         )
-                        retry_msg = {
-                            "input": (
-                                "앞선 출력은 잘못되었다. 아래 JSON이 **Action Input 전체**다. "
-                                "**'data' 바깥에 키를 추가하지 말라.**\n"
-                                "Action: mcp.simulator_run\n"
-                                f"Action Input: {injected_json}"
-                            )
-                        }
-                        res_run = ex.invoke(retry_msg, callbacks=[cap])
+                        res_run = _invoke_mcp_simulator_via_agent(action_input_json)
                         used_tools.append("mcp.simulator_run(retry)")
                 except Exception as e:
                     logger.warning("[ToolInputCheckError] %s", e)
 
-            # ---- Observation 파싱부터는 기존 로직 유지 ----
+            # Observation 파싱
             sim_obs = _last_observation(cap, "mcp.simulator_run")
             sim_dict = _loose_parse_json(sim_obs)
+
+            # 에이전트가 data 래핑을 하거나, top-level missing 패턴이면 → 툴 직접 호출 폴백
+            bad_top = _looks_like_missing_top_fields_error(sim_dict)
+            sent_wrapped = (cap.last_tool_input == {"data": sim_payload})
+            if (not sim_dict.get("ok") and bad_top) or sent_wrapped:
+                logger.warning("[MCPFallback] agent가 data 래핑 또는 top-level missing → 툴 직접 호출(언랩)")
+                tool = _get_tool(ex, "mcp.simulator_run")
+                if not tool:
+                    raise HTTPException(500, detail="mcp.simulator_run tool not found")
+                tool_res = tool.invoke(sim_payload)  # ★ 언랩 직접 호출
+                sim_dict = _loose_parse_json(tool_res)
+
+            # 최종 실패 처리
             if not sim_dict.get("ok"):
+                logger.error(
+                    "[SimulatorRunFail] error=%s | payload=%s",
+                    _truncate(sim_dict, 800),
+                    json.dumps(sim_payload, ensure_ascii=False),
+                )
                 raise HTTPException(status_code=500, detail=f"simulator_run failed: {sim_dict.get('error') or 'unknown'}")
 
             # case_id 확정/검증
@@ -439,15 +546,12 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
             logger.info("[SIM] case_id=%s turns=%s ended_by=%s",
                         sim_dict.get("case_id"), len(turns), sim_dict.get("ended_by"))
 
-
-            # ── (B) 판정 생성: DB 의존 없이, 방금 턴으로 직접 판단 ──
+            # ── (B) 판정 생성: 방금 턴으로 직접 판단 ──
             make_payload = {
                 "data": {
-                    "case_id": case_id,      # ★ _JudgeMakeInput 스키마 요구
+                    "case_id": case_id,
                     "run_no": round_no,
-                    "turns": turns           # ★ 핵심: 턴 직접 전달
-                    # "log": sim_dict.get("log"),  # (tools_admin이 log 지원하면 추가로 전달해도 OK)
-                    # "persist": False             # (스키마에 없으면 빼세요)
+                    "turns": turns
                 }
             }
             res_make = ex.invoke(
@@ -456,7 +560,6 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
             )
             used_tools.append("admin.make_judgement")
 
-            # 방금 호출한 툴의 Observation에서 판단 JSON 확보 (+ fallback)
             judge_obs = _last_observation(cap, "admin.make_judgement")
             judgement = _loose_parse_json(judge_obs) or _loose_parse_json(res_make)
             if not judgement:
@@ -506,31 +609,14 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 used_tools.append("admin.pick_guidance")
 
-                # 입력 검증(선택)
-                if cap.last_tool == "admin.pick_guidance":
-                    try:
-                        agent_input = cap.last_tool_input
-                        if isinstance(agent_input, str):
-                            from json import JSONDecoder
-                            agent_input = JSONDecoder().raw_decode(agent_input.strip())[0]
-                        if agent_input != {"data": {"kind": guidance_kind}}:
-                            logger.warning(
-                                "[ToolInputMismatch] admin.pick_guidance intended!=actual | intended=%s | actual=%s",
-                                json.dumps({"data": {"kind": guidance_kind}}, ensure_ascii=False),
-                                json.dumps(_truncate(agent_input), ensure_ascii=False),
-                            )
-                    except Exception as e:
-                        logger.warning("[ToolInputCheckError/pick_guidance] %s", e)
-
-                # Observation 기반으로 지침 텍스트 뽑기(더 견고)
+                # Observation 기반으로 지침 텍스트 뽑기
                 pick_obs = _last_observation(cap, "admin.pick_guidance")
                 guidance_text = _extract_guidance_text(pick_obs) or _extract_guidance_text(res_pick) or "기본 예방 수칙을 따르세요."
                 logger.info("[GuidancePicked] round=%s | kind=%s | text=%s", round_no, guidance_kind, _truncate(guidance_text, 300))
 
-
             # ── (E) 종료 조건 ───────────────────────────────────
             MIN_ROUNDS = 2
-            MAX_ROUNDS = max_rounds  # 위에서 계산한 값 재사용
+            MAX_ROUNDS = max_rounds
 
             stop_on_critical = (risk_lvl == "critical") and (round_no >= MIN_ROUNDS)
             hit_max_rounds   = (round_no >= MAX_ROUNDS)

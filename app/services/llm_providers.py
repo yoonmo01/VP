@@ -39,11 +39,11 @@ def openai_chat(model: Optional[str] = None, temperature: float = 0.7):
                           timeout=600000)
 
 
-STOP_SAFE_DEFAULT = "gpt-4o-2024-08-06"  # ReAct/stop 호환 안정판
+# STOP_SAFE_DEFAULT = "gpt-4o-2024-08-06"  # ReAct/stop 호환 안정판
 
 
 def agent_chat(model: str | None = None, temperature: float = 0.2):
-    name = model or getattr(settings, "AGENT_MODEL", None) or STOP_SAFE_DEFAULT
+    name = model or getattr(settings, "AGENT_MODEL", None) #or STOP_SAFE_DEFAULT
     # 'o4-mini' 같은 응답 API 전용 이름이 들어오면 안전 모델로 강제 매핑
     alias_map = {
         "o4-mini": "gpt-4o-mini-2024-07-18",  # 소형 버전 쓰고 싶으면 이걸로
@@ -87,7 +87,7 @@ def attacker_chat():
 
 
 def victim_chat():
-    provider = getattr(settings, "VICTIM_PROVIDER", "openai").lower()
+    provider = getattr(settings, "VICTIM_PROVIDER", "gemini").lower()
     model = settings.VICTIM_MODEL
     if provider == "gemini":
         return gemini_chat(model, temperature=0.7)

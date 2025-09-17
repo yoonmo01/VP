@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.schemas.simulation_request import SimulationStartRequest
 from app.db import models as m
 import os
+from fastapi import HTTPException
 
 ATTACKER_TEMPLATE_NAME = "ATTACKER_PROMPT_V1"
 VICTIM_TEMPLATE_NAME   = "VICTIM_PROMPT_V1"
@@ -29,6 +30,18 @@ def _strip_schema_dummy(d: Any) -> Any:
         return {}
     return d
 
+def _is_effectively_empty(d: Any) -> bool:
+    """빈 dict, 더미(string/additionalProp1)만 있는 경우 True"""
+    if not d or not isinstance(d, dict):
+        return True
+    for _, v in d.items():
+        if v in (None, "", {}, [], {"additionalProp1": {}}):
+            continue
+        if _is_dummy(v):
+            continue
+        return False
+    return True
+
 def _norm_scenario(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw = raw or {}
     desc    = _clean_text(raw.get("description") or raw.get("text"))
@@ -48,19 +61,23 @@ def _norm_victim_profile(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 # ─────────────────────────────────────────────────────────
-# DB 로딩 (기존 로직 유지)
+# DB 로딩
 # ─────────────────────────────────────────────────────────
 def load_victim_profile(db: Session, req: SimulationStartRequest) -> Dict[str, Any]:
-    if getattr(req, "custom_victim", None):
+    # 빈 custom이면 무시하고 DB 조회
+    if getattr(req, "custom_victim", None) and not _is_effectively_empty(req.custom_victim):
         cv = req.custom_victim
-        # pydantic 모델 → dict 안전 변환
         if hasattr(cv, "model_dump"):
             cv = cv.model_dump()
         return _norm_victim_profile(cv)
+
     assert req.victim_id is not None, "victim_id가 필요합니다(커스텀 피해자 없음)."
     vic = db.get(m.Victim, int(req.victim_id))
-    if not vic or not getattr(vic, "is_active", True):
-        raise ValueError(f"Victim {req.victim_id} not found or inactive")
+    if not vic:
+        raise HTTPException(400, detail=f"victim_id={req.victim_id} not found")
+    if not getattr(vic, "is_active", True):
+        raise HTTPException(400, detail=f"victim_id={req.victim_id} is not active")
+
     return _norm_victim_profile({
         "meta": vic.meta or (getattr(vic, "body", {}) or {}).get("meta", {}),
         "knowledge": vic.knowledge or (getattr(vic, "body", {}) or {}).get("knowledge", {}),
@@ -69,14 +86,20 @@ def load_victim_profile(db: Session, req: SimulationStartRequest) -> Dict[str, A
 
 def load_scenario_from_offender(db: Session, offender_id: int) -> Dict[str, Any]:
     off = db.get(m.PhishingOffender, int(offender_id))
-    if not off or not getattr(off, "is_active", True):
-        raise ValueError(f"Offender {offender_id} not found or inactive")
+    if not off:
+        raise HTTPException(400, detail=f"offender_id={offender_id} not found")
+    if not getattr(off, "is_active", True):
+        raise HTTPException(400, detail=f"offender_id={offender_id} is not active")
+
     prof = off.profile or {}
-    base = {
-        "description": prof.get("description") or prof.get("text") or off.type or "일반 시나리오",
-        "purpose": prof.get("purpose") or "미상",
-        "steps": prof.get("steps") or [],
-    }
+    # description 우선순위: name > type > profile.description/text > 기본
+    description = (off.name or off.type or prof.get("description") or prof.get("text") or "일반 시나리오")
+    purpose     = prof.get("purpose") or "미상"
+    steps       = prof.get("steps") or []
+    if not isinstance(steps, list):
+        steps = [str(steps)] if steps else []
+
+    base = {"description": description, "purpose": purpose, "steps": steps}
     return _norm_scenario(base)
 
 def build_custom_scenario(seed: Dict[str, Any], tavily_out: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -154,11 +177,14 @@ def build_prompt_package_from_payload(
     # 1) 프로파일/시나리오 로딩 & 정규화
     victim_profile = load_victim_profile(db, req)
 
-    if getattr(req, "custom_scenario", None):
+    if getattr(req, "custom_scenario", None) and not _is_effectively_empty(req.custom_scenario):
         seed = req.custom_scenario.model_dump() if hasattr(req.custom_scenario, "model_dump") else dict(req.custom_scenario)
         scenario = build_custom_scenario(seed, tavily_result)
         if is_first_run is True and skip_catalog_write is False:
             _ = save_custom_scenario_to_attack(db, scenario)
+    elif getattr(req, "scenario", None) and not _is_effectively_empty(req.scenario):
+        scn = req.scenario.model_dump() if hasattr(req.scenario, "model_dump") else dict(req.scenario)
+        scenario = _norm_scenario(scn)
     else:
         assert req.offender_id is not None, "offender_id가 필요합니다(커스텀 시나리오 없음)."
         scenario = load_scenario_from_offender(db, req.offender_id)

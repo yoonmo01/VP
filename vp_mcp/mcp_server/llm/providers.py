@@ -13,7 +13,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 # 내부 유틸 (app/services/llm_providers.py 로직을 MCP에 맞게 이식)
 # ─────────────────────────────────────────────────────────
 
-STOP_SAFE_DEFAULT = "gpt-4o-2024-08-06"  # 안정판 (참고용)
+# STOP_SAFE_DEFAULT = "gpt-4o-2024-08-06"  # 안정판 (참고용)
 
 def _openai_like_chat(model: str, base_url: str, api_key: str, temperature: float = 0.7) -> BaseChatModel:
     """
@@ -39,7 +39,7 @@ def _openai_chat(model: Optional[str] = None, temperature: float = 0.7) -> BaseC
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set")
 
-    mdl = (model or os.getenv("ADMIN_MODEL") or STOP_SAFE_DEFAULT).strip()
+    mdl = (model or os.getenv("ADMIN_MODEL")).strip()
     is_o_series = mdl.lower().startswith("o")  # "o4-mini", "o3-mini", "o1" 등
 
     if is_o_series:
@@ -74,8 +74,8 @@ def victim_chat() -> BaseChatModel:
     피해자 LLM. provider 선택 가능: openai | gemini | local
     - local 은 OpenAI 호환 서버 (base_url + api_key 필요)
     """
-    provider = (os.getenv("VICTIM_PROVIDER", "openai") or "openai").lower()
-    model = os.getenv("VICTIM_MODEL", "gpt-4o-mini-2024-07-18")
+    provider = (os.getenv("VICTIM_PROVIDER", "gemini") or "gemini").lower()
+    model = os.getenv("VICTIM_MODEL")
 
     if provider == "gemini":
         return _gemini_chat(model, temperature=0.7)
@@ -96,7 +96,7 @@ def agent_chat(model: Optional[str] = None, temperature: float = 0.2) -> BaseCha
     에이전트/플래너용 (여기서는 필요시 사용). ReAct는 저온 권장.
     alias 맵은 필요하면 추가.
     """
-    name = model or os.getenv("AGENT_MODEL") or STOP_SAFE_DEFAULT
+    name = model or os.getenv("AGENT_MODEL")
     alias_map = {
         "o4-mini": "gpt-4o-mini-2024-07-18",
         "o4": "gpt-4o-2024-08-06",
