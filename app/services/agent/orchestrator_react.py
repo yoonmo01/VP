@@ -228,6 +228,36 @@ def _get_tool(executor: AgentExecutor, name: str):
             return t
     return None
 
+# orchestrator_react.py
+from app.db import models as m
+
+def _ensure_admincase(db: Session, case_id: str, scenario_json: Dict[str, Any]) -> None:
+    """라운드1에서 case_id 확정되자마자 AdminCase가 반드시 존재하도록 보장."""
+    try:
+        case = db.get(m.AdminCase, case_id)
+        if not case:
+            case = m.AdminCase(
+                id=case_id,              # UUID 문자열이어도 SQLAlchemy가 캐스팅해줌
+                scenario=scenario_json,  # build_prompt_package_from_payload 에서 받은 scenario
+                phishing=False,
+                status="running",
+                defense_count=0,
+            )
+            db.add(case)
+            created = True
+        else:
+            # 기존 레코드가 있으면 최소한 상태/시나리오만 보정
+            if not case.scenario:
+                case.scenario = scenario_json
+            case.status = case.status or "running"
+        db.flush()
+        db.commit()
+        logger.info("[AdminCase upsert] case_id=%s | created=%s", case_id, created)
+    except Exception as e:
+        logger.warning(f"[AdminCase upsert] failed: {e}")
+
+
+
 
 # ─────────────────────────────────────────────────────────
 # LangChain 콜백: Thought/Action/Observation 캡처
@@ -403,7 +433,7 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
         offender_id = int(req.offender_id or 0)
         victim_id = int(req.victim_id or 0)
         # max_rounds = max(2, min(req.round_limit or 4, 5))  # 2~5
-        max_rounds = 3
+        max_rounds = 1
 
         guidance_kind: Optional[str] = None
         guidance_text: Optional[str] = None
@@ -552,6 +582,7 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 if not case_id:
                     logger.error("[CaseID] 라운드1 case_id 추출 실패 | obs=%s", _truncate(sim_dict))
                     raise HTTPException(status_code=500, detail="case_id 추출 실패(라운드1)")
+                _ensure_admincase(db, case_id, scenario_base)
             else:
                 got = str(sim_dict.get("case_id") or "")
                 if got and got != case_id:
@@ -561,6 +592,35 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
 
             # 판정용 turns 확보 및 누적
             turns = sim_dict.get("turns") or (sim_dict.get("log") or {}).get("turns") or []
+            ended_by = sim_dict.get("ended_by")
+            stats = sim_dict.get("stats") or {}
+            from app.db import models as m
+            try:
+                round_row = (
+                    db.query(m.ConversationRound)
+                    .filter(m.ConversationRound.case_id == case_id,
+                            m.ConversationRound.run == round_no)
+                    .first()
+                )
+                if not round_row:
+                    round_row = m.ConversationRound(
+                        case_id=case_id,
+                        run=round_no,
+                        offender_id=offender_id,
+                        victim_id=victim_id,
+                        turns=turns,
+                        ended_by=ended_by,
+                        stats=stats,
+                    )
+                    db.add(round_row)
+                else:
+                    round_row.turns = turns
+                    round_row.ended_by = ended_by
+                    round_row.stats = stats
+
+                db.commit()
+            except Exception as e:
+                logger.warning(f"[DB] save conversation_round failed: {e}")
             logger.info("[SIM] case_id=%s turns=%s ended_by=%s",
                         sim_dict.get("case_id"), len(turns), sim_dict.get("ended_by"))
             if isinstance(turns, list):
@@ -643,8 +703,8 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 logger.info("[GuidancePicked] round=%s | kind=%s | text=%s", round_no, guidance_kind, _truncate(guidance_text, 300))
 
             # ── (E) 종료 조건 ───────────────────────────────────
-            MIN_ROUNDS = 2
-            MAX_ROUNDS = max_rounds
+            MIN_ROUNDS = 1
+            MAX_ROUNDS = 1
 
             stop_on_critical = (risk_lvl == "critical") and (round_no >= MIN_ROUNDS)
             hit_max_rounds   = (round_no >= MAX_ROUNDS)
@@ -681,6 +741,25 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
             prevention_obj = {}
         else:
             prevention_obj = prev_dict.get("personalized_prevention") or {}
+
+        if prevention_obj:
+            summary = prevention_obj.get("summary", "")
+            steps = prevention_obj.get("steps", [])
+            save_payload = {
+                "data": {
+                    "case_id": case_id,
+                    "offender_id": offender_id,
+                    "victim_id": victim_id,
+                    "run_no": rounds_done,
+                    "summary": summary,
+                    "steps": steps
+                }
+            }
+            res_save = ex.invoke(
+                {"input": "admin.save_prevention 호출.\n" + json.dumps(save_payload, ensure_ascii=False)},
+                callbacks=[cap],
+            )
+            used_tools.append("admin.save_prevention")
 
         return {
             "status": "success",

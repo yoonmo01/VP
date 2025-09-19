@@ -163,67 +163,98 @@ def _persist_verdict(
     verdict: Dict[str, Any],
 ) -> bool:
     """
-    verdict: {
-      phishing: bool,
-      evidence: str,
-      risk: {score:int, level:str, rationale:str},
-      victim_vulnerabilities: [str,...],
-      continue: {recommendation:str, reason:str}
-    }
+    verdict 예:
+      {
+        "phishing": False,
+        "evidence": "...",
+        "risk": {"score": 10, "level": "low", "rationale": "..."},
+        "victim_vulnerabilities": [...],
+        "continue": {"recommendation": "continue", "reason": "..."}
+      }
     """
+    success = False
+
+    # 1) AdminCaseSummary가 있으면 라운드별로 저장/업서트
     try:
         if hasattr(m, "AdminCaseSummary"):
             Model = m.AdminCaseSummary
-            exists = (
+            row = (
                 db.query(Model)
                   .filter(Model.case_id == case_id, Model.run == run_no)
                   .first()
             )
-            if exists:
-                # 멱등
-                return True
-            row = Model(
-                case_id=case_id,
-                run=run_no,
-                phishing=bool(verdict.get("phishing", False)),
-            )
-            # 칼럼 존재 시 추가 기입
+            if not row:
+                row = Model(case_id=case_id, run=run_no)
+                db.add(row)
+
+            row.phishing = bool(verdict.get("phishing", False))
+
             if hasattr(Model, "evidence"):
                 setattr(row, "evidence", str(verdict.get("evidence", ""))[:4000])
-            if hasattr(Model, "reason") and not getattr(row, "evidence", None):
-                setattr(row, "reason", str(verdict.get("evidence", ""))[:2000])
+
             risk = verdict.get("risk") or {}
             if hasattr(Model, "risk_score"):
-                setattr(row, "risk_score", int(risk.get("score", 0)))
+                setattr(row, "risk_score", int(risk.get("score", 0) or 0))
             if hasattr(Model, "risk_level"):
-                setattr(row, "risk_level", str(risk.get("level", "")))
+                setattr(row, "risk_level", str(risk.get("level", "") or ""))
             if hasattr(Model, "risk_rationale"):
-                setattr(row, "risk_rationale", str(risk.get("rationale", ""))[:2000])
+                setattr(row, "risk_rationale", str(risk.get("rationale", "") or "")[:2000])
+
             if hasattr(Model, "vulnerabilities"):
                 setattr(row, "vulnerabilities", verdict.get("victim_vulnerabilities", []))
             if hasattr(Model, "verdict_json"):
                 setattr(row, "verdict_json", verdict)
-            db.add(row)
-            db.commit()
-            return True
-    except Exception as e:
-        logger.warning(f"[admin.make_judgement] AdminCaseSummary 저장 실패: {e}")
 
-    # Fallback: AdminCase.evidence에 JSON 문자열로 누적
+            success = True
+    except Exception as e:
+        logger.warning(f"[admin.make_judgement] AdminCaseSummary 저장/업데이트 실패: {e}")
+
+    # 2) 항상 AdminCase에 최신 요약 + 히스토리 라인 누적
     try:
         case = db.get(m.AdminCase, case_id)
         if not case:
-            return False
+            if success:
+                db.commit()
+            return success
+
+        # 케이스 단위 phishing은 OR
+        case.phishing = bool(getattr(case, "phishing", False) or verdict.get("phishing", False))
+
+        # 최신 요약 컬럼이 존재할 경우에만 세팅(없어도 동작)
+        risk = verdict.get("risk") or {}
+        cont = verdict.get("continue") or {}
+
+        if hasattr(case, "last_run_no"):
+            case.last_run_no = run_no
+        if hasattr(case, "last_risk_score"):
+            case.last_risk_score = int(risk.get("score", 0) or 0)
+        if hasattr(case, "last_risk_level"):
+            case.last_risk_level = str(risk.get("level", "") or "")
+        if hasattr(case, "last_risk_rationale"):
+            case.last_risk_rationale = str(risk.get("rationale", "") or "")
+        if hasattr(case, "last_vulnerabilities"):
+            case.last_vulnerabilities = verdict.get("victim_vulnerabilities", [])
+        if hasattr(case, "last_recommendation"):
+            case.last_recommendation = str(cont.get("recommendation", "") or "")
+        if hasattr(case, "last_recommendation_reason"):
+            case.last_recommendation_reason = str(cont.get("reason", "") or "")
+
+        # 라운드 히스토리 라인 누적 (run 포함)
         prev = (case.evidence or "").strip()
         piece = json.dumps({"run": run_no, "verdict": verdict}, ensure_ascii=False)
         case.evidence = (prev + ("\n" if prev else "") + piece)[:8000]
-        # 케이스 단위 phishing은 OR
-        case.phishing = bool(getattr(case, "phishing", False) or verdict.get("phishing", False))
+
+        success = True
         db.commit()
-        return True
+        return success
+
     except Exception as e:
-        logger.warning(f"[admin.make_judgement] AdminCase fallback 저장 실패: {e}")
-        return False
+        logger.warning(f"[admin.make_judgement] AdminCase 저장 실패: {e}")
+        try:
+            db.commit()
+        except Exception:
+            pass
+        return success
 
 def _read_persisted_verdict(db: Session, *, case_id: UUID, run_no: int) -> Optional[Dict[str, Any]]:
     # 1) AdminCaseSummary 우선

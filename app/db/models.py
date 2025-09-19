@@ -7,7 +7,7 @@ from sqlalchemy.orm import relationship, Mapped, mapped_column
 from uuid import uuid4
 from datetime import datetime, timezone
 from app.db.base import Base
-
+import sqlalchemy as sa
 
 # 1) 피싱범
 class PhishingOffender(Base):
@@ -37,20 +37,29 @@ class Victim(Base):
 
 
 # 3) 관리자 케이스
+# AdminCase (추가 필드)
 class AdminCase(Base):
     __tablename__ = "admincase"
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True),
-                                     primary_key=True,
-                                     default=uuid4)
+    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     scenario: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # 기존
     phishing: Mapped[bool | None] = mapped_column()
     evidence: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="running")
     defense_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
-    completed_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    # ✅ 추가(최근 라운드 요약)
+    last_run_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_risk_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_risk_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_vulnerabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # list -> JSONB
+    last_recommendation: Mapped[str | None] = mapped_column(String(20), nullable=True)  # continue/stop
+    last_recommendation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
 
 
 # 4) 대화 로그 (하이브리드: TEXT + JSONB)
@@ -93,6 +102,47 @@ class ConversationLog(Base):
                          "turn_index",
                          name="uq_case_run_turn"),
     )
+
+# 4-1) 라운드 별 대화로그 저장
+class ConversationRound(Base):
+    __tablename__ = "conversation_round"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+
+    # 라운드 식별
+    case_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("admincase.id"), index=True, nullable=False
+    )
+    run: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=1)
+
+    # 편의(조회용)
+    offender_id: Mapped[int] = mapped_column(
+        ForeignKey("phishingoffender.id"), nullable=False
+    )
+    victim_id: Mapped[int] = mapped_column(
+        ForeignKey("victim.id"), nullable=False
+    )
+
+    # MCP 반환 본문
+    turns: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=list  # ← 리스트(턴 배열)
+    )
+    ended_by: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    stats: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        sa.TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+    case = relationship("AdminCase")
+
+    __table_args__ = (
+        UniqueConstraint("case_id", "run", name="uq_round_case_run"),
+        Index("ix_round_case_run", "case_id", "run"),
+    )
+
 
 
 # 5) 예방 대책(카탈로그) — JSONB 본문 저장

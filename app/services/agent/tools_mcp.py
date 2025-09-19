@@ -227,6 +227,16 @@ def make_mcp_tools():
 
         if not isinstance(result, dict):
             return {"ok": False, "error": "bad_simulator_payload", "raw": res}
+        
+        for _ in range(3):
+            if isinstance(result.get("result"), dict):
+                result = result["result"]
+                continue
+            raw = result.get("raw")
+            if isinstance(raw, dict) and isinstance(raw.get("result"), dict):
+                result = raw["result"]
+                continue
+            break
 
         # 여러 경로에서 conversation_id를 튼튼하게 추출
         cid = (
