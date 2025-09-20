@@ -317,7 +317,7 @@ const App = () => {
     return () => ro.disconnect();
   }, []);
 
-  /* 초/�� 데이터 로드 */
+  /* 초기 데이터 로드 */
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -740,27 +740,30 @@ const App = () => {
     setSessionResult(null);
     setProgress(0);
     setSimulationState("IDLE");
-    setPendingAgentDecision(false);
-    setShowReportPrompt(false);
+    // setPendingAgentDecision(false);
+    // setShowReportPrompt(false);
 
-    setHasInitialRun(false);
-    setHasAgentRun(false);
-    setAgentRunning(false);
+    // setHasInitialRun(false);
+    // setHasAgentRun(false);
+    // setAgentRunning(false);
 
-    setCurrentCaseId(null);
-    // setAgentModalVisible(false);
-    // setAgentUsed(null);
+    // setCurrentCaseId(null);
     setCurrentPage("simulator");
 
-    if (simIntervalRef.current) {
-      clearInterval(simIntervalRef.current);
-      simIntervalRef.current = null;
-    }
-    if (jobPollRef.current) {
-      clearInterval(jobPollRef.current);
-      jobPollRef.current = null;
-    }
-    lastTurnRef.current = -1;
+    // if (simIntervalRef.current) {
+    //   clearInterval(simIntervalRef.current);
+    //   simIntervalRef.current = null;
+    // }
+    // if (jobPollRef.current) {
+    //   clearInterval(jobPollRef.current);
+    //   jobPollRef.current = null;
+    // }
+    // lastTurnRef.current = -1;
+  };
+
+   /* --------- onBack 핸들러 추가 --------- */
+  const handleBack = () => {
+    setCurrentPage("landing");
   };
 
   // cleanup on unmount
@@ -780,6 +783,8 @@ const App = () => {
   /* --------- pageProps 전달 --------- */
   const pageProps = {
     COLORS,
+    apiRoot: API_ROOT,     // ✅ 추가
+    onBack: handleBack,    // ✅ 추가
     setCurrentPage,
     selectedScenario,
     setSelectedScenario,

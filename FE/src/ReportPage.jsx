@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { useEffect, useState, useMemo } from "react";
 import Badge from "./Badge";
+// import TTSModal from "./components/TTSModal";
+// import { THEME } from "./constants/colors"; // THEME import
 
 async function fetchWithTimeout(url, { timeout = 15000, ...opts } = {}) {
   const ctrl = new AbortController();
@@ -55,6 +57,8 @@ const ReportPage = ({
     danger: COLORS?.danger ?? "#ED4245",
   };
   // -------------------------------------------------------------------
+
+  // const [open, setOpen] = useState(false);
 
   // ---------- admin-case 실시간 조회 ----------
   const [adminCase, setAdminCase] = useState(null);
