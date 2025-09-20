@@ -11,6 +11,8 @@ import CustomCharacterCreate from "./CustomCharacterCreate";
 import InvestigationBoard from "./InvestigationBoard";
 import TTSModal from "./components/TTSModal";
 import { THEME as BASE_THEME } from "./constants/colors";
+import CustomScenarioButton from "./CustomScenarioButton";
+import CustomScenarioModal from "./CustomScenarioModal";
 
 const getVictimImage = (photoPath) => {
   if (!photoPath) return null;
@@ -64,6 +66,10 @@ const SimulatorPage = ({
   const [selectedTag, setSelectedTag] = useState(null);
   const [open, setOpen] = useState(false);
 
+  // 커스텀 시나리오 관리
+  const [customScenarios, setCustomScenarios] = useState([]);
+  const [showCustomModal, setShowCustomModal] = useState(false);
+
   // --- 디자인 변경: 더 어두운 경찰 엠블럼 느낌 팔레트로 강제 덮어쓰기 ---
   const THEME = {
   ...(COLORS ?? BASE_THEME),
@@ -89,6 +95,21 @@ const SimulatorPage = ({
         (Array.isArray(s.tags) && s.tags.includes(selectedTag)),
     );
   }, [selectedTag, scenarios]);
+
+  // 기본 + 커스텀 목록 결합 (커스텀은 태그가 선택되어 있으면 그 태그만 보여줌)
+  const combinedScenarios = useMemo(() => {
+    const base = filteredScenarios ?? [];
+    const custom = selectedTag
+      ? customScenarios.filter((c) => c.type === selectedTag)
+      : customScenarios;
+    return [...base, ...custom];
+  }, [filteredScenarios, customScenarios, selectedTag]);
+
+  const handleSaveCustomScenario = (scenario) => {
+    setCustomScenarios((prev) => [...prev, scenario]); // 맨 끝에 추가
+    setShowCustomModal(false);
+  };
+  const handleCloseCustomModal = () => setShowCustomModal(false);
 
   const normalizeMessage = (m) => {
     if (m?.type === "system" || m?.type === "analysis") {
@@ -1727,11 +1748,16 @@ const SimulatorPage = ({
                           ))}
                         </div>
 
+                       {/* ➕ 새 시나리오 추가 카드 */}
+                        <div className="mb-4">
+                          <CustomScenarioButton onClick={() => setShowCustomModal(true)} COLORS={THEME} />
+                        </div>
+
                         <div
                           className="flex-1 min-h-0 space-y-4 overflow-y-auto pr-1"
                           style={{ maxHeight: "100%" }}
                         >
-                          {filteredScenarios.map((s) => (
+                          {combinedScenarios.map((s) => (
                             <button
                               key={s.id}
                               onClick={() => setSelectedScenario(s)}
@@ -1744,7 +1770,7 @@ const SimulatorPage = ({
                             >
                               <div className="flex items-center justify-between mb-2">
                                 <span className="font-semibold text-lg">{s.name}</span>
-                                <Badge tone="primary" COLORS={THEME}>
+                                <Badge tone={s.type === "커스텀" ? "secondary" : "primary"} COLORS={THEME}>
                                   {s.type}
                                 </Badge>
                               </div>
@@ -1756,6 +1782,18 @@ const SimulatorPage = ({
                               </p>
                             </button>
                           ))}
+                          {combinedScenarios.length === 0 && (
+                            <div
+                              className="w-full text-left rounded-lg p-4"
+                              style={{
+                                backgroundColor: THEME.panelDark,
+                                border: `1px solid ${THEME.border}`,
+                                color: THEME.sub,
+                              }}
+                            >
+                              표시할 시나리오가 없습니다. “새 시나리오 추가”로 만들어 보세요.
+                            </div>
+                          )}
                         </div>
                       </SelectedCard>
                     </div>
@@ -2087,6 +2125,14 @@ const SimulatorPage = ({
         </div>
       )}
 
+      <CustomScenarioModal
+        open={showCustomModal}
+        onClose={handleCloseCustomModal}
+        onSave={handleSaveCustomScenario}
+        COLORS={THEME}
+        selectedTag={selectedTag}
+      />
+
       {/* 리포트 안내 모달 */}
       {showReportPrompt && (
         <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
@@ -2134,6 +2180,14 @@ const SimulatorPage = ({
           </div>
         </div>
       )}
+      {/* 커스텀 시나리오 모달 */}
+      <CustomScenarioModal
+        open={showCustomModal}
+        onClose={handleCloseCustomModal}
+        onSave={handleSaveCustomScenario}
+        COLORS={THEME}
+        selectedTag={selectedTag}
+      />
     </div>
   );
 };
