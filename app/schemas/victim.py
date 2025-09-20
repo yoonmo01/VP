@@ -1,6 +1,6 @@
 #app/schemas/victim.py
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict
 
 class VictimCreate(BaseModel):
     name: str
@@ -10,6 +10,24 @@ class VictimCreate(BaseModel):
     is_active: bool = True                         # ✅ 기본 True
     photo_path: Optional[str] = None               # ✅ 이미지 경로 (선택)
 
+
+class VictimFlexibleIn(BaseModel):
+    # 프론트가 보내는 모든 케이스를 포괄
+    name: str
+
+    # ① 간소 입력 케이스 (체크리스트/오션 순서)
+    checklist_lines: Optional[List[str]] = None
+    ocean_levels: Optional[List[str]] = None  # ["높음","낮음","..."] 개방성→성실성→외향성→친화성→신경성
+
+    # ② 이미 구조화된 케이스
+    meta: Optional[Dict[str, Any]] = None
+    knowledge: Optional[Dict[str, Any]] = None   # {comparative_notes, competencies, digital_finance_literacy, ...}
+    traits: Optional[Dict[str, Any]] = None      # {ocean:{...}, vulnerability_notes:[...]}
+    note: Optional[str] = None
+
+    # 공통
+    photo_path: Optional[str] = None
+    is_active: Optional[bool] = True
 
 
 class VictimIntakeSimple(BaseModel):
