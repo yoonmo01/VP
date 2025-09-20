@@ -9,8 +9,6 @@ import {
 } from "lucide-react";
 import { useEffect, useState, useMemo } from "react";
 import Badge from "./Badge";
-// import TTSModal from "./components/TTSModal";
-// import { THEME } from "./constants/colors"; // THEME import
 
 async function fetchWithTimeout(url, { timeout = 15000, ...opts } = {}) {
   const ctrl = new AbortController();
@@ -36,10 +34,12 @@ const ReportPage = ({
   defaultCaseData,
   selectedScenario,
   selectedCharacter,
-  currentCaseId, // ★ App에서 전달
-  victimImageUrl, // ✅ 피해자 이미지 URL 추가
+  currentCaseId,
+  victimImageUrl,
+  apiRoot,
+  mockMode,
 }) => {
-  // --- THEME: 기존 COLORS을 덮어쓰는 어두운 경찰 엠블럼 팔레트 ---
+  // THEME
   const THEME = {
     ...COLORS,
     bg: "#030617",
@@ -56,11 +56,44 @@ const ReportPage = ({
     black: "#000000",
     danger: COLORS?.danger ?? "#ED4245",
   };
-  // -------------------------------------------------------------------
 
-  // const [open, setOpen] = useState(false);
+  // ------------ helpers ------------
+  const getAdminCase = async (caseId) => {
+    try {
+      if (mockMode) {
+        const url = `/dummy/admin_case_dummy-case-1.json`;
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) throw new Error(`dummy fetch ${res.status}`);
+        return await res.json();
+      }
+      return await fetchWithTimeout(
+        `${apiRoot}/admin-cases/${encodeURIComponent(caseId)}`
+      );
+    } catch (e) {
+      console.error("[getAdminCase] failed:", e);
+      throw e;
+    }
+  };
 
-  // ---------- admin-case 실시간 조회 ----------
+  const getPersonalizedForCase = async (caseId) => {
+    try {
+      if (mockMode) {
+        const url = `/dummy/personalized_by_case_dummy-case-1.json`;
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) throw new Error(`dummy fetch ${res.status}`);
+        return await res.json();
+      }
+      return await fetchWithTimeout(
+        `${apiRoot}/personalized/by-case/${encodeURIComponent(caseId)}`,
+        { timeout: 200000 }
+      );
+    } catch (e) {
+      console.error("[getPersonalizedForCase] failed:", e);
+      throw e;
+    }
+  };
+
+  // ---------- admin-case ----------
   const [adminCase, setAdminCase] = useState(null);
   const [adminCaseLoading, setAdminCaseLoading] = useState(false);
   const [adminCaseError, setAdminCaseError] = useState(null);
@@ -72,10 +105,7 @@ const ReportPage = ({
       setAdminCaseLoading(true);
       setAdminCaseError(null);
       try {
-        const data = await fetchWithTimeout(
-          `/api/admin-cases/${encodeURIComponent(currentCaseId)}`,
-          { timeout: 15000 },
-        );
+        const data = await getAdminCase(currentCaseId);
         if (!mounted) return;
         setAdminCase(data || null);
       } catch (e) {
@@ -88,20 +118,23 @@ const ReportPage = ({
     return () => {
       mounted = false;
     };
-  }, [currentCaseId]);
+  }, [currentCaseId, mockMode, apiRoot]);
 
-  // ---------- 표시값(우선순위: adminCase -> defaultCaseData -> sessionResult) ----------
+  // ---------- 표시값 ----------
   const casePhishing = useMemo(() => {
     const fromAdmin =
-      typeof adminCase?.phishing === "boolean" ? adminCase.phishing : undefined;
+      typeof adminCase?.phishing === "boolean" ? adminCase.phishing : typeof adminCase?.case?.phishing === "boolean" ? adminCase.case.phishing : undefined;
+
     const fromDefault =
       typeof defaultCaseData?.case?.phishing === "boolean"
         ? defaultCaseData.case.phishing
         : undefined;
+
     const fromSessionPhishing =
       typeof sessionResult?.phishing === "boolean"
         ? sessionResult.phishing
         : undefined;
+        
     const fromSessionIs =
       typeof sessionResult?.isPhishing === "boolean"
         ? sessionResult.isPhishing
@@ -115,6 +148,7 @@ const ReportPage = ({
   const caseEvidence = useMemo(() => {
     return (
       adminCase?.evidence ??
+      adminCase?.case?.evidence ??
       defaultCaseData?.case?.evidence ??
       sessionResult?.case?.evidence ??
       sessionResult?.evidence ??
@@ -122,7 +156,7 @@ const ReportPage = ({
     );
   }, [adminCase, defaultCaseData, sessionResult]);
 
-  // ---------- 피해자/부가정보 ----------
+  // ---------- 피해자 ----------
   const victimFromSession = sessionResult
     ? {
         name: sessionResult.victimName ?? "알 수 없음",
@@ -138,15 +172,16 @@ const ReportPage = ({
           comparative_notes: Array.isArray(sessionResult?.victimKnowledge)
             ? sessionResult.victimKnowledge
             : Array.isArray(sessionResult?.victimComparativeNotes)
-              ? sessionResult.victimComparativeNotes
-              : Array.isArray(sessionResult?.knowledge?.comparative_notes)
-                ? sessionResult.knowledge.comparative_notes
-                : [],
+            ? sessionResult.victimComparativeNotes
+            : Array.isArray(sessionResult?.knowledge?.comparative_notes)
+            ? sessionResult.knowledge.comparative_notes
+            : [],
         },
       }
     : null;
 
-  const victim = selectedCharacter ??
+  const victim =
+    selectedCharacter ??
     victimFromSession ?? {
       name: "알 수 없음",
       meta: { age: "-", gender: "-", address: "-", education: "-", job: "-" },
@@ -176,11 +211,9 @@ const ReportPage = ({
 
   const phishingTypeText =
     selectedScenario?.type ??
-    (Array.isArray(scenarios)
-      ? (scenarios[0]?.type ?? "피싱 유형")
-      : "피싱 유형");
+    (Array.isArray(scenarios) ? scenarios[0]?.type ?? "피싱 유형" : "피싱 유형");
 
-  // ====== agent logs 안전 추출 및 use_agent 필터 ======
+  // ========== 에이전트 로그 ==========
   const rawAgentLogs = useMemo(() => {
     return (
       sessionResult?.agentLogs ??
@@ -203,26 +236,27 @@ const ReportPage = ({
         l?.use_agent_flag ??
         l?.use_agent_value ??
         undefined;
-      if (v === true || v === "true" || v === 1 || v === "1") return true;
-      return false;
+      return v === true || v === "true" || v === 1 || v === "1";
     });
   }, [rawAgentLogs]);
 
-  // ====== 개인화 예방법 (Personalized) ======
+  // ========== 개인화 예방법 ==========
   const [personalized, setPersonalized] = useState(null);
   const [personalizedLoading, setPersonalizedLoading] = useState(false);
   const [personalizedError, setPersonalizedError] = useState(null);
 
   function pickLatestPersonalized(items = []) {
     if (!Array.isArray(items) || items.length === 0) return null;
-    return items.slice().sort((a, b) => {
-      const ra = typeof a.run === "number" ? a.run : -1;
-      const rb = typeof b.run === "number" ? b.run : -1;
-      if (rb !== ra) return rb - ra;
-      const ta = Date.parse(a.created_at || 0);
-      const tb = Date.parse(b.created_at || 0);
-      return tb - ta;
-    })[0];
+    return items
+      .slice()
+      .sort((a, b) => {
+        const ra = typeof a.run === "number" ? a.run : -1;
+        const rb = typeof b.run === "number" ? b.run : -1;
+        if (rb !== ra) return rb - ra;
+        const ta = Date.parse(a.created_at || 0);
+        const tb = Date.parse(b.created_at || 0);
+        return tb - ta;
+      })[0];
   }
 
   useEffect(() => {
@@ -235,10 +269,7 @@ const ReportPage = ({
       setPersonalizedLoading(true);
       setPersonalizedError(null);
       try {
-        const data = await fetchWithTimeout(
-          `/api/personalized/by-case/${encodeURIComponent(currentCaseId)}`,
-          { timeout: 200000 },
-        );
+        const data = await getPersonalizedForCase(currentCaseId);
         if (!mounted) return;
         const picked = pickLatestPersonalized(data || []);
         setPersonalized(picked);
@@ -253,7 +284,7 @@ const ReportPage = ({
     return () => {
       mounted = false;
     };
-  }, [currentCaseId]);
+  }, [currentCaseId, mockMode, apiRoot]);
 
   function RiskBadge({ level }) {
     const lv = String(level || "").toLowerCase(); // low / medium / high
@@ -261,7 +292,6 @@ const ReportPage = ({
     if (lv.includes("high")) toneBg = THEME.danger;
     else if (lv.includes("medium")) toneBg = THEME.warn;
     else if (lv.includes("low")) toneBg = THEME.success;
-
     return (
       <span
         className="text-xs px-3 py-1 rounded font-semibold"
@@ -272,11 +302,9 @@ const ReportPage = ({
     );
   }
 
+  // ---------- JSX ----------
   return (
-    <div
-      style={{ backgroundColor: THEME.bg, color: THEME.text }}
-      className="min-h-screen"
-    >
+    <div style={{ backgroundColor: THEME.bg, color: THEME.text }} className="min-h-screen">
       <div className="mx-auto min-h-screen p-6 md:p-10 xl:p-12 flex flex-col">
         <div className="flex items-center justify-between mb-10">
           <h1 className="text-4xl font-bold">시뮬레이션 리포트</h1>
@@ -311,10 +339,7 @@ const ReportPage = ({
                   <Shield className="mr-3" size={26} />
                   피싱 유형
                 </h2>
-                <div
-                  className="text-xl font-medium"
-                  style={{ color: THEME.blurple }}
-                >
+                <div className="text-xl font-medium" style={{ color: THEME.blurple }}>
                   {phishingTypeText}
                 </div>
               </div>
@@ -354,16 +379,10 @@ const ReportPage = ({
                   </div>
 
                   <div className="text-center">
-                    <div
-                      className="font-semibold text-xl mb-3"
-                      style={{ color: THEME.text }}
-                    >
+                    <div className="font-semibold text-xl mb-3" style={{ color: THEME.text }}>
                       {victim?.name}
                     </div>
-                    <div
-                      className="text-base space-y-2"
-                      style={{ color: THEME.sub }}
-                    >
+                    <div className="text-base space-y-2" style={{ color: THEME.sub }}>
                       <div>나이: {victim?.meta?.age}</div>
                       <div>성별: {victim?.meta?.gender}</div>
                       <div>거주지: {victim?.meta?.address}</div>
@@ -372,12 +391,9 @@ const ReportPage = ({
                     </div>
                   </div>
 
-                  {/* 성격 정보 (OCEAN) */}
+                  {/* OCEAN */}
                   <div>
-                    <h3
-                      className="font-semibold text-lg mb-3"
-                      style={{ color: THEME.text }}
-                    >
+                    <h3 className="font-semibold text-lg mb-3" style={{ color: THEME.text }}>
                       성격 특성 (OCEAN)
                     </h3>
 
@@ -387,10 +403,7 @@ const ReportPage = ({
                           <span
                             key={idx}
                             className="px-3 py-2 rounded-full text-sm font-medium"
-                            style={{
-                              backgroundColor: THEME.border,
-                              color: THEME.black,
-                            }}
+                            style={{ backgroundColor: THEME.border, color: THEME.black }}
                           >
                             {e.label}: {e.value}
                           </span>
@@ -408,10 +421,7 @@ const ReportPage = ({
                           <span
                             key={i}
                             className="px-4 py-2 rounded-full text-sm font-medium"
-                            style={{
-                              backgroundColor: THEME.border,
-                              color: THEME.black,
-                            }}
+                            style={{ backgroundColor: THEME.border, color: THEME.black }}
                           >
                             {t}
                           </span>
@@ -420,12 +430,9 @@ const ReportPage = ({
                     )}
                   </div>
 
-                  {/* ✅ 지식 정보 */}
+                  {/* 지식 */}
                   <div className="mt-6">
-                    <h3
-                      className="font-semibold text-lg mb-3"
-                      style={{ color: THEME.text }}
-                    >
+                    <h3 className="font-semibold text-lg mb-3" style={{ color: THEME.text }}>
                       지식
                     </h3>
                     <div className="space-y-1">
@@ -451,29 +458,7 @@ const ReportPage = ({
               </div>
 
               {/* AI 에이전트 사용 여부 */}
-              <div
-                className="rounded-2xl p-8"
-                style={{
-                  backgroundColor: THEME.panel,
-                  border: `1px solid ${THEME.border}`,
-                }}
-              >
-                <h2
-                  className="text-2xl font-semibold mb-5 flex items-center"
-                  style={{ color: THEME.text }}
-                >
-                  <Bot className="mr-3" size={26} />
-                  AI 에이전트
-                </h2>
-                <div className="flex items-center gap-4">
-                  <Badge
-                    tone={sessionResult.agentUsed ? "success" : "neutral"}
-                    COLORS={THEME}
-                  >
-                    {sessionResult.agentUsed ? "사용" : "미사용"}
-                  </Badge>
-                </div>
-              </div>
+
             </div>
 
             {/* 오른쪽 패널 */}
@@ -481,25 +466,16 @@ const ReportPage = ({
               {/* 피싱 판정 결과 */}
               <div
                 className="rounded-2xl p-8"
-                style={{
-                  backgroundColor: THEME.panel,
-                  border: `1px solid ${THEME.border}`,
-                }}
+                style={{ backgroundColor: THEME.panel, border: `1px solid ${THEME.border}` }}
               >
                 <div className="flex items-center justify-between mb-5">
-                  <h2
-                    className="text-2xl font-semibold flex items-center"
-                    style={{ color: THEME.text }}
-                  >
+                  <h2 className="text-2xl font-semibold flex items-center" style={{ color: THEME.text }}>
                     <AlertTriangle className="mr-3" size={26} />
                     피싱 판정 결과
                   </h2>
 
                   <div className="ml-4">
-                    <Badge
-                      tone={casePhishing ? "primary" : "danger"}
-                      COLORS={THEME}
-                    >
+                    <Badge tone={casePhishing ? "primary" : "danger"} COLORS={THEME}>
                       {casePhishing ? "피싱 성공" : "피싱 실패"}
                     </Badge>
                   </div>
@@ -518,19 +494,12 @@ const ReportPage = ({
 
                 <div
                   className="mt-2 p-4 rounded"
-                  style={{
-                    backgroundColor: THEME.bg,
-                    border: `1px solid ${THEME.border}`,
-                    color: THEME.text,
-                  }}
+                  style={{ backgroundColor: THEME.bg, border: `1px solid ${THEME.border}`, color: THEME.text }}
                 >
                   <h4 className="font-semibold mb-2">
                     {casePhishing ? "피싱 성공 근거" : "피싱 실패 근거"}
                   </h4>
-                  <p
-                    className="text-sm leading-relaxed whitespace-pre-wrap"
-                    style={{ color: THEME.sub }}
-                  >
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: THEME.sub }}>
                     {caseEvidence || "근거 정보가 없습니다."}
                   </p>
                 </div>
@@ -539,22 +508,19 @@ const ReportPage = ({
               {/* 개인화 예방법 */}
               <div
                 className="rounded-2xl p-8"
-                style={{
-                  backgroundColor: THEME.panel,
-                  border: `1px solid ${THEME.border}`,
-                }}
+                style={{ backgroundColor: THEME.panel, border: `1px solid ${THEME.border}` }}
               >
                 <div className="flex items-center justify-between mb-5">
-                  <h2
-                    className="text-2xl font-semibold flex items-center"
-                    style={{ color: THEME.text }}
-                  >
+                  <h2 className="text-2xl font-semibold flex items-center" style={{ color: THEME.text }}>
                     <Shield className="mr-3" size={26} />
                     개인화 예방법
                   </h2>
-                  {personalized?.content?.analysis?.risk_level && (
+                  {(personalized?.content?.analysis?.risk_level || personalized?.content?.risk_level) && (
                     <RiskBadge
-                      level={personalized.content.analysis.risk_level}
+                      level={
+                        personalized?.content?.analysis?.risk_level ??
+                        personalized?.content?.risk_level
+                      }
                     />
                   )}
                 </div>
@@ -574,35 +540,20 @@ const ReportPage = ({
                   <>
                     <div
                       className="p-4 rounded mb-6"
-                      style={{
-                        backgroundColor: THEME.bg,
-                        border: `1px solid ${THEME.border}`,
-                        color: THEME.text,
-                      }}
+                      style={{ backgroundColor: THEME.bg, border: `1px solid ${THEME.border}`, color: THEME.text }}
                     >
                       <h3 className="font-semibold mb-2">요약</h3>
-                      <p
-                        className="text-sm leading-relaxed whitespace-pre-wrap"
-                        style={{ color: THEME.sub }}
-                      >
-                        {personalized?.content?.summary ??
-                          "요약 정보가 없습니다."}
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: THEME.sub }}>
+                        {personalized?.content?.summary ?? "요약 정보가 없습니다."}
                       </p>
                     </div>
 
                     <div className="mb-6">
-                      <h3
-                        className="font-semibold mb-3"
-                        style={{ color: THEME.text }}
-                      >
+                      <h3 className="font-semibold mb-3" style={{ color: THEME.text }}>
                         실천 단계 (steps)
                       </h3>
-                      {Array.isArray(personalized?.content?.steps) &&
-                      personalized.content.steps.length > 0 ? (
-                        <ul
-                          className="list-disc pl-6 space-y-1 text-sm"
-                          style={{ color: THEME.sub }}
-                        >
+                      {Array.isArray(personalized?.content?.steps) && personalized.content.steps.length > 0 ? (
+                        <ul className="list-disc pl-6 space-y-1 text-sm" style={{ color: THEME.sub }}>
                           {personalized.content.steps.map((s, i) => (
                             <li key={i}>{s}</li>
                           ))}
@@ -615,18 +566,11 @@ const ReportPage = ({
                     </div>
 
                     <div className="mb-6">
-                      <h3
-                        className="font-semibold mb-3"
-                        style={{ color: THEME.text }}
-                      >
+                      <h3 className="font-semibold mb-3" style={{ color: THEME.text }}>
                         핵심 팁 (tips)
                       </h3>
-                      {Array.isArray(personalized?.content?.tips) &&
-                      personalized.content.tips.length > 0 ? (
-                        <ul
-                          className="list-disc pl-6 space-y-1 text-sm"
-                          style={{ color: THEME.sub }}
-                        >
+                      {Array.isArray(personalized?.content?.tips) && personalized.content.tips.length > 0 ? (
+                        <ul className="list-disc pl-6 space-y-1 text-sm" style={{ color: THEME.sub }}>
                           {personalized.content.tips.map((t, i) => (
                             <li key={i}>{t}</li>
                           ))}
@@ -639,25 +583,15 @@ const ReportPage = ({
                     </div>
 
                     <div>
-                      <h3
-                        className="font-semibold mb-3"
-                        style={{ color: THEME.text }}
-                      >
+                      <h3 className="font-semibold mb-3" style={{ color: THEME.text }}>
                         판단 근거 (trace)
                       </h3>
-                      {Array.isArray(
-                        personalized?.content?.trace?.decision_notes,
-                      ) &&
+                      {Array.isArray(personalized?.content?.trace?.decision_notes) &&
                       personalized.content.trace.decision_notes.length > 0 ? (
-                        <ul
-                          className="list-disc pl-6 space-y-1 text-sm"
-                          style={{ color: THEME.sub }}
-                        >
-                          {personalized.content.trace.decision_notes.map(
-                            (n, i) => (
-                              <li key={i}>{n}</li>
-                            ),
-                          )}
+                        <ul className="list-disc pl-6 space-y-1 text-sm" style={{ color: THEME.sub }}>
+                          {personalized.content.trace.decision_notes.map((n, i) => (
+                            <li key={i}>{n}</li>
+                          ))}
                         </ul>
                       ) : (
                         <div className="text-sm" style={{ color: THEME.sub }}>
@@ -672,15 +606,9 @@ const ReportPage = ({
               {/* 출처 및 참고자료 */}
               <div
                 className="rounded-2xl p-8"
-                style={{
-                  backgroundColor: THEME.panel,
-                  border: `1px solid ${THEME.border}`,
-                }}
+                style={{ backgroundColor: THEME.panel, border: `1px solid ${THEME.border}` }}
               >
-                <h2
-                  className="text-2xl font-semibold mb-5 flex items-center"
-                  style={{ color: THEME.text }}
-                >
+                <h2 className="text-2xl font-semibold mb-5 flex items-center" style={{ color: THEME.text }}>
                   <ExternalLink className="mr-3" size={26} />
                   사례 출처 및 참고자료
                 </h2>
@@ -689,30 +617,17 @@ const ReportPage = ({
                   {(() => {
                     const src =
                       selectedScenario?.source ??
-                      (Array.isArray(scenarios)
-                        ? scenarios[0]?.source
-                        : null) ??
+                      (Array.isArray(scenarios) ? scenarios[0]?.source : null) ??
                       defaultCaseData?.case?.source ??
                       null;
 
                     if (!src) {
                       return (
-                        <div
-                          className="p-5 rounded-lg"
-                          style={{
-                            backgroundColor: THEME.bg,
-                            color: THEME.sub,
-                          }}
-                        >
-                          <h3
-                            className="font-semibold text-lg mb-3"
-                            style={{ color: THEME.text }}
-                          >
+                        <div className="p-5 rounded-lg" style={{ backgroundColor: THEME.bg, color: THEME.sub }}>
+                          <h3 className="font-semibold text-lg mb-3" style={{ color: THEME.text }}>
                             참고 사례
                           </h3>
-                          <p className="text-base mb-4 leading-relaxed">
-                            출처 정보가 없습니다.
-                          </p>
+                          <p className="text-base mb-4 leading-relaxed">출처 정보가 없습니다.</p>
                         </div>
                       );
                     }
@@ -720,37 +635,21 @@ const ReportPage = ({
                     const { title, page, url } = src;
 
                     return (
-                      <div
-                        className="p-5 rounded-lg"
-                        style={{ backgroundColor: THEME.bg, color: THEME.sub }}
-                      >
-                        <h3
-                          className="font-semibold text-lg mb-3"
-                          style={{ color: THEME.text }}
-                        >
+                      <div className="p-5 rounded-lg" style={{ backgroundColor: THEME.bg, color: THEME.sub }}>
+                        <h3 className="font-semibold text-lg mb-3" style={{ color: THEME.text }}>
                           {title ?? "참고 사례"}
                         </h3>
                         {page && (
-                          <div
-                            className="text-base mb-2"
-                            style={{ color: THEME.sub }}
-                          >
+                          <div className="text-base mb-2" style={{ color: THEME.sub }}>
                             페이지: {page}
                           </div>
                         )}
-                        <p
-                          className="text-base mb-4 leading-relaxed"
-                          style={{ color: THEME.sub }}
-                        >
-                          {sessionResult?.caseSource ??
-                            "본 시뮬레이션은 실제 보이스피싱 사례를 바탕으로 제작되었습니다."}
+                        <p className="text-base mb-4 leading-relaxed" style={{ color: THEME.sub }}>
+                          {sessionResult?.caseSource ?? "본 시뮬레이션은 실제 보이스피싱 사례를 바탕으로 제작되었습니다."}
                         </p>
                         <div className="space-y-3">
                           <div className="flex items-center gap-3">
-                            <span
-                              className="text-base font-medium"
-                              style={{ color: THEME.text }}
-                            >
+                            <span className="text-base font-medium" style={{ color: THEME.text }}>
                               출처:
                             </span>
                             {url ? (
@@ -765,10 +664,7 @@ const ReportPage = ({
                                 {url}
                               </a>
                             ) : (
-                              <span
-                                className="text-base"
-                                style={{ color: THEME.sub }}
-                              >
+                              <span className="text-base" style={{ color: THEME.sub }}>
                                 {sessionResult?.source ?? "-"}
                               </span>
                             )}
@@ -784,59 +680,37 @@ const ReportPage = ({
               {false && filteredAgentLogs.length > 0 && (
                 <div
                   className="rounded-2xl p-8"
-                  style={{
-                    backgroundColor: THEME.panel,
-                    border: `1px solid ${THEME.border}`,
-                  }}
+                  style={{ backgroundColor: THEME.panel, border: `1px solid ${THEME.border}` }}
                 >
-                  <h2
-                    className="text-2xl font-semibold mb-5 flex items-center"
-                    style={{ color: THEME.text }}
-                  >
+                  <h2 className="text-2xl font-semibold mb-5 flex items-center" style={{ color: THEME.text }}>
                     <Terminal className="mr-3" size={26} />
                     AI 에이전트 로그
                   </h2>
 
                   <div className="space-y-4">
                     {filteredAgentLogs.map((log, i) => {
-                      const ts =
-                        log?.timestamp ?? log?.time ?? log?.created_kst ?? "";
+                      const ts = log?.timestamp ?? log?.time ?? log?.created_kst ?? "";
                       const type = log?.type ?? log?.level ?? "agent";
                       const message =
                         typeof log === "string"
                           ? log
-                          : (log?.message ??
-                            log?.text ??
-                            log?.content ??
-                            JSON.stringify(log));
-
+                          : log?.message ?? log?.text ?? log?.content ?? JSON.stringify(log);
                       return (
                         <div key={i} className="text-sm">
                           <div className="flex items-center gap-3 mb-2">
                             <span
                               className="text-xs px-3 py-2 rounded font-mono"
-                              style={{
-                                backgroundColor: THEME.border,
-                                color: THEME.black,
-                              }}
+                              style={{ backgroundColor: THEME.border, color: THEME.black }}
                             >
                               {ts}
                             </span>
-                            <span
-                              className="text-sm font-medium"
-                              style={{ color: THEME.blurple }}
-                            >
+                            <span className="text-sm font-medium" style={{ color: THEME.blurple }}>
                               {type}
                             </span>
                           </div>
-
                           <div
                             className="pl-5 py-3 rounded font-mono text-sm leading-relaxed"
-                            style={{
-                              backgroundColor: THEME.bg,
-                              borderLeft: `3px solid ${THEME.blurple}`,
-                              color: THEME.sub,
-                            }}
+                            style={{ backgroundColor: THEME.bg, borderLeft: `3px solid ${THEME.blurple}`, color: THEME.sub }}
                           >
                             {message}
                           </div>
@@ -845,14 +719,8 @@ const ReportPage = ({
                     })}
                   </div>
 
-                  <div
-                    className="mt-5 pt-4 border-t"
-                    style={{ borderColor: THEME.border }}
-                  >
-                    <div
-                      className="flex items-center justify-between text-sm"
-                      style={{ color: THEME.sub }}
-                    >
+                  <div className="mt-5 pt-4 border-t" style={{ borderColor: THEME.border }}>
+                    <div className="flex items-center justify-between text-sm" style={{ color: THEME.sub }}>
                       <span>총 {filteredAgentLogs.length}개 로그</span>
                     </div>
                   </div>
@@ -861,13 +729,7 @@ const ReportPage = ({
             </div>
           </div>
         ) : (
-          <div
-            className="rounded-2xl p-8"
-            style={{
-              backgroundColor: THEME.panel,
-              border: `1px solid ${THEME.border}`,
-            }}
-          >
+          <div className="rounded-2xl p-8" style={{ backgroundColor: THEME.panel, border: `1px solid ${THEME.border}` }}>
             <p className="text-base" style={{ color: THEME.sub }}>
               세션 결과가 없습니다. 시뮬레이션을 먼저 실행해주세요.
             </p>

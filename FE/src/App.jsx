@@ -1,5 +1,5 @@
 // src/App.jsx
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback} from "react";
 import LandingPage from "./LandingPage";
 import SimulatorPage from "./SimulatorPage";
 import ReportPage from "./ReportPage";
@@ -27,7 +27,114 @@ export const API_ROOT = `${API_BASE}${API_PREFIX}`;
 console.log("VITE_API_URL =", import.meta.env.VITE_API_URL);
 console.log("API_ROOT =", API_ROOT);
 
+/* ================== MOCK MODE (더미 JSONL 주입) ================== */
+const MOCK_MODE = true;
+
+/* 유틸: is_convinced(1~10) → 10~100% 로 정규화 */
+function normalizeConvincedToPct(v) {
+  const n = Math.max(1, Math.min(10, Number(v) || 0));
+  return n * 10; // 1->10%, 10->100%
+}
+
+// public의 JSONL을 줄단위로 읽기
+async function loadJsonlFromPublic(path) {
+  const res = await fetch(path, { cache: "no-store" });
+  if (!res.ok) throw new Error(`JSONL 로드 실패: ${res.status} ${res.statusText}`);
+  const text = await res.text();
+  return text
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+// JSONL → 프론트가 기대하는 번들 스키마로 변환
+function jsonlToConversationBundle(rows) {
+  const case_id = "dummy-case-1";
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { case_id, logs: [], total_turns: 0 };
+  }
+  const t0 = Date.now();
+  const logs = rows.map((r, i) => {
+    const role = (r.role || "").toLowerCase(); // "offender" | "victim" | "spinner_message" 등
+    const textFromRow = typeof r.text === "string" ? r.text : "";
+
+    const jr = r.json_reply || {};
+    const vThoughts = typeof jr.thoughts === "string" ? jr.thoughts.trim() : "";
+    const vDialogue = typeof jr.dialogue === "string" ? jr.dialogue.trim() : "";
+
+    const content =
+      role === "victim"
+        ? [vThoughts, vDialogue].filter(Boolean).join("\n")
+        : textFromRow;
+
+    
+    const isConvRaw = (r.is_convinced ?? jr.is_convinced);
+    const isConvPct = isConvRaw == null ? null : normalizeConvincedToPct(isConvRaw);
+
+    return {
+      run: r.run_no ?? 1,
+      turn_index: r.turn ?? i,
+      role,
+      content,
+      created_kst: new Date(t0 + i * 700).toISOString(),
+      offender_name: "사칭 콜센터",
+      victim_name: "피해자",
+      use_agent: (r.run_no ?? 1) !== 1,
+      guidance_type: null,
+      guideline: null,
+      thoughts: vThoughts || null,
+      is_convinced: isConvRaw ?? null,  // 1~10
+      convinced_pct: isConvPct,         // 10~100
+    };
+  });
+
+  // 정렬
+  logs.sort((a, b) => {
+    const ra = (a.run ?? 0) - (b.run ?? 0);
+    if (ra !== 0) return ra;
+    const ta = (a.turn_index ?? 0) - (b.turn_index ?? 0);
+    if (ta !== 0) return ta;
+    return new Date(a.created_kst) - new Date(b.created_kst);
+  });
+
+  const total_turns = Math.max(...logs.map((x) => x.turn_index ?? 0), 0) + 1;
+
+  return {
+    case_id,
+    scenario: {
+      methods_used: [],
+      last_analysis: {
+        outcome: "inconclusive",
+        reasons: [],
+        guidance: { type: null, title: null, category: null },
+        phishing: null,
+      },
+    },
+    offender: { id: 1, name: "사칭 콜센터", type: "더미", is_active: true },
+    victim: {
+      id: 1,
+      name: "피해자",
+      is_active: true,
+      photo_path: "/static/images/victims/1.png",
+    },
+    logs,
+    total_turns,
+    phishing: null,
+    evidence: null,
+  };
+}
+
+// JSONL 캐시
+let __dummyBundleCache = null;
+async function getDummyBundle() {
+  if (__dummyBundleCache) return __dummyBundleCache;
+  const rows = await loadJsonlFromPublic("/dummy/sim_convo_rounds1_2_full.jsonl");
+  __dummyBundleCache = jsonlToConversationBundle(rows);
+  return __dummyBundleCache;
+}
+
 /* ================== 공통 fetch 유틸 ================== */
+
 async function fetchWithTimeout(
   url,
   { method = "GET", headers = {}, body = null, timeout = 100000 } = {},
@@ -60,16 +167,23 @@ async function fetchWithTimeout(
 }
 
 /* ================== API 헬퍼 ================== */
-async function getOffenders() {
-  return fetchWithTimeout(`${API_ROOT}/offenders/`);
+
+async function runReactSimulation(body) {
+  if (MOCK_MODE) {
+    return { case_id: (await getDummyBundle()).case_id };
+  }
+  return fetchWithTimeout(`${API_ROOT}/react-agent/simulation`, {
+    method: "POST",
+    body,
+    timeout: 600000,
+  });
 }
-async function getVictims() {
-  return fetchWithTimeout(`${API_ROOT}/victims/`);
-}
+
+async function getOffenders() { return fetchWithTimeout(`${API_ROOT}/offenders/`); }
+async function getVictims() { return fetchWithTimeout(`${API_ROOT}/victims/`); }
 async function getConversationBundle(caseId) {
-  return fetchWithTimeout(
-    `${API_ROOT}/conversations/${encodeURIComponent(caseId)}`,
-  );
+  if (MOCK_MODE) return await getDummyBundle();
+  return fetchWithTimeout(`${API_ROOT}/conversations/${encodeURIComponent(caseId)}`);
 }
 async function runConversationAsync(offenderId, victimId, payload = {}) {
   return fetchWithTimeout(
@@ -78,84 +192,45 @@ async function runConversationAsync(offenderId, victimId, payload = {}) {
   );
 }
 async function getJobStatus(jobId) {
-  return fetchWithTimeout(
-    `${API_ROOT}/conversations/job/${encodeURIComponent(jobId)}`,
-    { timeout: 15000 },
-  );
+  return fetchWithTimeout(`${API_ROOT}/conversations/job/${encodeURIComponent(jobId)}`, { timeout: 15000 });
 }
 async function runAgentForCase(caseId, payload = {}, { verbose = false } = {}) {
   return fetchWithTimeout(
     `${API_ROOT}/agent/run/${encodeURIComponent(caseId)}?verbose=${verbose ? "true" : "false"}`,
-    {
-      method: "POST",
-      body: payload,
-      timeout: 120000, // 에이전트 작업은 길어질 수 있어 타임아웃 확대
-    },
+    { method: "POST", body: payload, timeout: 120000 },
   );
 }
-/* ---------- 새로 추가 (에이전트 비동기 실행 + 폴링) ---------- */
-async function runAgentForCaseAsync(
-  caseId,
-  { verbose = false, timeout = 1200000 } = {},
-) {
+async function runAgentForCaseAsync(caseId, { verbose = false, timeout = 1200000 } = {}) {
   const url = `${API_ROOT}/agent/run_async/${encodeURIComponent(caseId)}?verbose=${verbose ? "true" : "false"}`;
-  return fetchWithTimeout(url, {
-    method: "POST",
-    timeout,
-  });
+  return fetchWithTimeout(url, { method: "POST", timeout });
 }
 async function getAgentJobStatus(jobId) {
-  return fetchWithTimeout(
-    `${API_ROOT}/agent/job/${encodeURIComponent(jobId)}`,
-    { timeout: 300000 },
-  );
+  return fetchWithTimeout(`${API_ROOT}/agent/job/${encodeURIComponent(jobId)}`, { timeout: 300000 });
 }
-
-/* ---------- 새로 추가 (개인화 예방법 fetch — 백엔드 라우터가 있다면 사용) ---------- */
 async function getPersonalizedForCase(caseId) {
-  // 백엔드에 /cases/{id}/personalized 엔드포인트가 있다면 사용하세요.
-  // 없다면 이 함수는 호출하지 않거나, agent/run 완료 응답(result.personalized)에서 직접 읽으세요.
-  return fetchWithTimeout(
-    `${API_ROOT}/personalized/by-case/${encodeURIComponent(caseId)}`,
-    { timeout: 200000 },
-  );
+  return fetchWithTimeout(`${API_ROOT}/personalized/by-case/${encodeURIComponent(caseId)}`, { timeout: 200000 });
 }
 
 // ==== use_agent 판별 및 로그 필터 유틸 ====
 function isUseAgentTrue(log) {
   if (!log) return false;
-  // 가능한 후보 필드들을 모두 검사 (서버가 어떤 형태를 쓰는지 모를 때 안전)
-  const v =
-    log?.use_agent ??
-    log?.useAgent ??
-    log?.use_agent_flag ??
-    log?.use_agent_value;
-  if (v === true) return true;
-  if (v === "true") return true;
+  const v = log?.use_agent ?? log?.useAgent ?? log?.use_agent_flag ?? log?.use_agent_value;
+  if (v === true || v === "true") return true;
   if (v === 1 || v === "1") return true;
   return false;
 }
-
 function filterLogsByAgentFlag(logs = [], { forAgent = false } = {}) {
   if (!Array.isArray(logs)) return [];
-  if (forAgent) {
-    return logs.filter((l) => isUseAgentTrue(l));
-  } else {
-    return logs.filter((l) => !isUseAgentTrue(l));
-  }
+  return forAgent ? logs.filter((l) => isUseAgentTrue(l)) : logs.filter((l) => !isUseAgentTrue(l));
 }
 
 // === 요약 박스 컴포넌트 (미리보기 preview를 그대로 표시) ======================
 function mapOutcomeToKorean(outcome) {
   switch (outcome) {
-    case "attacker_fail":
-      return "공격자 실패";
-    case "attacker_success":
-      return "공격자 성공";
-    case "inconclusive":
-      return "판단 불가";
-    default:
-      return outcome || "-";
+    case "attacker_fail": return "공격자 실패";
+    case "attacker_success": return "공격자 성공";
+    case "inconclusive": return "판단 불가";
+    default: return outcome || "-";
   }
 }
 function toArrayReasons(reason, reasons) {
@@ -164,7 +239,6 @@ function toArrayReasons(reason, reasons) {
   if (typeof reason === "string" && reason.trim()) return [reason];
   return [];
 }
-
 function InlinePhishingSummaryBox({ preview }) {
   if (!preview) return null;
   const outcome = mapOutcomeToKorean(preview.outcome);
@@ -220,7 +294,7 @@ const App = () => {
   // selection / simulation
   const [selectedScenario, setSelectedScenario] = useState(null);
   const [selectedCharacter, setSelectedCharacter] = useState(null);
-  const [simulationState, setSimulationState] = useState("IDLE"); // IDLE, PREPARE, RUNNING, FINISH
+  const [simulationState, setSimulationState] = useState("IDLE"); // IDLE, PREPARE, RUNNING, INTERMISSION, IDLE
   const [messages, setMessages] = useState([]);
   const [sessionResult, setSessionResult] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -229,12 +303,16 @@ const App = () => {
   const [pendingAgentDecision, setPendingAgentDecision] = useState(false);
   const [showReportPrompt, setShowReportPrompt] = useState(false);
 
-  // run control flags (요청하신 동작)
-  const [hasInitialRun, setHasInitialRun] = useState(false); // 초기(Agent OFF) 실행했는지
-  const [hasAgentRun, setHasAgentRun] = useState(false); // 에이전트 실행했는지
-  const [agentRunning, setAgentRunning] = useState(false); // 에이전트 요청 중인지(로더)
+  // run control flags
+  const [hasInitialRun, setHasInitialRun] = useState(false);
+  const [hasAgentRun, setHasAgentRun] = useState(false);
+  const [agentRunning, setAgentRunning] = useState(false);
 
-  // refs for intervals / scrolling
+  // NEW: spinner 노출 시간 (기본 5초)
+  const [spinnerDelayMs, setSpinnerDelayMs] = useState(3000);
+  const [boardDelaySec, setBoardDelaySec] = useState(18); // 오른쪽 보드 지연(초)
+
+  // refs
   const scrollContainerRef = useRef(null);
   const jobPollRef = useRef(null);
   const simIntervalRef = useRef(null);
@@ -246,6 +324,7 @@ const App = () => {
   const [currentCaseId, setCurrentCaseId] = useState(null);
 
   const [agentPreviewShown, setAgentPreviewShown] = useState(false);
+  const [showIntermissionSpinner, setShowIntermissionSpinner] = useState(false);
 
   // NEW: verbose 토글
   const [agentVerbose, setAgentVerbose] = useState(false);
@@ -274,24 +353,34 @@ const App = () => {
       ...prev,
       { type: "analysis", content, timestamp: new Date().toLocaleTimeString() },
     ]);
-  const addChat = (
-    sender,
-    content,
-    timestamp = null,
-    senderLabel = null,
-    side = null,
-  ) =>
+ const addChat = (
+   sender,
+   content,
+   timestamp = null,
+   senderLabel = null,
+   side = null,
+   meta = {}
+ ) =>
+   setMessages((prev) => [
+     ...prev,
+     {
+       type: "chat",
+       sender,
+       senderLabel: senderLabel ?? sender,
+       senderName: senderLabel ?? sender,
+       side: side ?? (sender === "offender" ? "left" : "right"),
+       content,
+       timestamp: timestamp ?? new Date().toLocaleTimeString(),
+       ...meta, // ✅ 메타(예: convincedPct) 주입
+     },
+   ]);
+  // NEW: spinner_message 추가
+  const addSpinner = (content) =>
     setMessages((prev) => [
       ...prev,
-      {
-        type: "chat",
-        sender,
-        senderLabel: senderLabel ?? sender,
-        senderName: senderLabel ?? sender,
-        side: side ?? (sender === "offender" ? "left" : "right"),
-        content,
-        timestamp: timestamp ?? new Date().toLocaleTimeString(),
-      },
+      { type: "system",
+        content: content?.startsWith("🔄") ? content : `🔄 ${content}`,
+        timestamp: new Date().toLocaleTimeString(), },
     ]);
 
   /* 스크롤 자동 하단 고정 */
@@ -324,10 +413,7 @@ const App = () => {
       try {
         setDataLoading(true);
         setDataError(null);
-        const [offList, vicList] = await Promise.all([
-          getOffenders(),
-          getVictims(),
-        ]);
+        const [offList, vicList] = await Promise.all([getOffenders(), getVictims()]);
         if (!mounted) return;
         setScenarios(Array.isArray(offList) ? offList : []);
         setCharacters(Array.isArray(vicList) ? vicList : []);
@@ -344,77 +430,207 @@ const App = () => {
     };
   }, []);
 
-  /* playLogs: append 옵션 + onComplete 콜백 지원 */
-  const playLogs = (
-    logs = [],
-    { append = false, speed = 1500 } = {},
-    onComplete = null,
-  ) => {
-    if (!Array.isArray(logs) || logs.length === 0) {
-      onComplete && onComplete();
-      return;
-    }
-
-    if (!append) setMessages([]);
-    setProgress((p) => (append ? p : 0));
-    setSimulationState("RUNNING");
-
-    if (simIntervalRef.current) {
-      clearInterval(simIntervalRef.current);
-      simIntervalRef.current = null;
-    }
-
-    let i = 0;
-    const total = logs.length;
-    const interval = setInterval(() => {
-      if (i >= total) {
-        clearInterval(interval);
-        simIntervalRef.current = null;
-        // 재생이 끝난 시점에 IDLE로 복귀
-        setSimulationState("IDLE");
+  /**
+   * 대화 로그 재생
+   * - run 1 → 2 전환 구간에서 spinner_message를 표시하고 spinnerDelayMs 만큼 대기 후 2라운드 시작
+   * - JSONL에 role === 'spinner_message'가 있으면 그 텍스트 사용, 없으면 "생각중…" 사용
+   */
+  const playLogs = useCallback(
+    (
+      logs = [],
+      {
+        append = false,
+        speed = 1500,
+        spinnerText: spinnerTextArg = null,
+        spinnerDelayOverride = null, // 개별 호출 시 오버라이드
+      } = {},
+      onComplete = null,
+    ) => {
+      if (!Array.isArray(logs) || logs.length === 0) {
         onComplete && onComplete();
         return;
       }
 
-      const log = logs[i];
-      const role = (log.role || "").toLowerCase();
-      const offenderLabel =
-        log.offender_name ||
-        (selectedScenario ? `피싱범${selectedScenario.id}` : "피싱범");
-      const victimLabel =
-        log.victim_name ||
-        (selectedCharacter ? `피해자${selectedCharacter.id}` : "피해자");
-      const displayLabel = role === "offender" ? offenderLabel : victimLabel;
-      const side = role === "offender" ? "left" : "right";
+      // spinner_message 추출 및 본 로그에서 제외
+      const spinnerLog = logs.find((l) => (l.role || "").toLowerCase() === "spinner_message");
+      const spinnerText =
+        spinnerTextArg ||
+        (spinnerLog?.content && String(spinnerLog.content).trim()) ||
+        "생각중…";
+      const purifiedLogs = logs.filter((l) => (l.role || "").toLowerCase() !== "spinner_message");
 
-      const ts =
-        log.created_kst && typeof log.created_kst === "string"
-          ? new Date(log.created_kst).toLocaleTimeString()
-          : (log.created_kst ?? new Date().toLocaleTimeString());
+      if (!append) setMessages([]);
+      setProgress((p) => (append ? p : 0));
 
-      if (
-        role === "analysis" ||
-        role === "system" ||
-        log.label === "analysis"
-      ) {
-        addAnalysis(log.content ?? "");
-      } else {
-        addChat(role || "offender", log.content ?? "", ts, displayLabel, side);
+      setSimulationState("PREPARE");
+
+      if (simIntervalRef.current) {
+        clearTimeout(simIntervalRef.current);
+        simIntervalRef.current = null;
       }
 
-      if (!append) {
-        setProgress(((i + 1) / total) * 100);
-      } else {
-        setProgress((p) => Math.min(100, p + 100 / Math.max(1, total)));
-      }
+      const total = purifiedLogs.length;
+      let idx = 0;
+      let prevRun = purifiedLogs[0]?.run ?? 1;
 
-      i += 1;
-    }, speed);
+      const INITIAL_DELAY = 1000; // 첫 메시지 전 짧은 로딩
+      const INTERMISSION_DELAY = spinnerDelayOverride ?? spinnerDelayMs; // ✅ 조절 가능
 
-    simIntervalRef.current = interval;
-  };
+      const pushOne = (log) => {
+        const role = (log.role || "").toLowerCase();
+        const offenderLabel =
+          log.offender_name ||
+          (selectedScenario ? `피싱범${selectedScenario.id}` : "피싱범");
+        const victimLabel =
+          log.victim_name ||
+          (selectedCharacter ? `피해자${selectedCharacter.id}` : "피해자");
+        const displayLabel = role === "offender" ? offenderLabel : victimLabel;
+        const side = role === "offender" ? "left" : "right";
 
-  /* job 폴링: job이 done 되면 bundle을 onDone으로 전달 (play는 호출하지 않음) */
+        const content = String(log.content ?? "");
+
+        const ts =
+          log.created_kst && typeof log.created_kst === "string"
+            ? new Date(log.created_kst).toLocaleTimeString()
+            : log.created_kst ?? new Date().toLocaleTimeString();
+
+        const convincedPct =
+           (typeof log.convinced_pct === "number" ? log.convinced_pct : null) ??
+           (log.is_convinced != null ? normalizeConvincedToPct(log.is_convinced) : null);
+
+        if (role === "analysis" || role === "system" || log.label === "analysis") {
+          addAnalysis(content);
+        } else {
+          addChat(
+           role || "offender",
+           content,
+           ts,
+           displayLabel,
+           side,
+           { convincedPct } // ✅ MessageBubble이 읽는 키로 전달
+         );
+        }
+      };
+
+      const step = () => {
+        if (idx >= total) {
+          simIntervalRef.current = null;
+          setSimulationState("IDLE");
+          onComplete && onComplete();
+          return;
+        }
+
+        const log = purifiedLogs[idx];
+        const currRun = log.run ?? prevRun;
+
+        // run 1 -> 2 전환 시: spinner 표시 → 대기 → 다음 로그 출력
+        if (prevRun === 1 && currRun === 2) {
+          setSimulationState("INTERMISSION");
+          // spinner 메시지 추가
+          setShowIntermissionSpinner(true);
+          simIntervalRef.current = setTimeout(() => {
+            setShowIntermissionSpinner(false);
+            setSimulationState("RUNNING");
+            pushOne(log);
+
+            if (!append) {
+              setProgress(((idx + 1) / total) * 100);
+            } else {
+              setProgress((p) => Math.min(100, p + 100 / Math.max(1, total)));
+            }
+
+            prevRun = currRun;
+            idx += 1;
+            step();
+          }, INTERMISSION_DELAY);
+          return;
+        }
+
+        const delay = idx === 0 ? INITIAL_DELAY : speed;
+
+        simIntervalRef.current = setTimeout(() => {
+          setSimulationState("RUNNING");
+          pushOne(log);
+
+          if (!append) {
+            setProgress(((idx + 1) / total) * 100);
+          } else {
+            setProgress((p) => Math.min(100, p + 100 / Math.max(1, total)));
+          }
+
+          prevRun = currRun;
+          idx += 1;
+          step();
+        }, delay);
+      };
+
+      step();
+    },
+    [
+      addAnalysis,
+      addChat,
+      addSpinner,
+      setMessages,
+      setProgress,
+      setSimulationState,
+      selectedScenario,
+      selectedCharacter,
+      spinnerDelayMs,
+    ],
+  );
+
+  const showConversationBundle = useCallback((bundle) => {
+    setDefaultCaseData(bundle);
+    setSessionResult((prev) => ({
+      ...(prev || {}),
+      phishing: bundle.phishing ?? prev?.phishing ?? null,
+      isPhishing: bundle.phishing ?? prev?.isPhishing ?? null,
+      evidence: bundle.evidence ?? prev?.evidence ?? null,
+      totalTurns: bundle.total_turns ?? prev?.totalTurns ?? null,
+    }));
+
+    const logs = (bundle.logs || []).slice().sort((a, b) => {
+      const ra = (a.run ?? 0) - (b.run ?? 0);
+      if (ra !== 0) return ra;
+      const ta = (a.turn_index ?? 0) - (b.turn_index ?? 0);
+      if (ta !== 0) return ta;
+      const da = new Date(a.created_at || a.created_kst || 0) - new Date(b.created_at || b.created_kst || 0);
+      return da;
+    });
+
+    if (!logs.length) {
+      addSystem("표시할 대화 로그가 없습니다.");
+      setShowReportPrompt(true);
+      setSimulationState("IDLE");
+      return;
+    }
+
+    // 전체 로그 재생 (spinner_message는 playLogs 내부에서 추출/처리)
+    playLogs(
+      logs,
+      {
+        append: false,
+        speed: 700,
+        // spinnerDelayOverride: 7000, // ← 필요 시 개별 호출에서 덮어쓰기
+      },
+      () => {
+        setShowReportPrompt(true);
+        addSystem("대화 재생이 완료되었습니다. 리포트를 확인할 수 있습니다.");
+      },
+    );
+  }, [addSystem, playLogs, setShowReportPrompt, setSimulationState]);
+
+  const showExistingCase = useCallback(async (caseId) => {
+    try {
+      const bundle = await getConversationBundle(caseId);
+      setCurrentCaseId(caseId);
+      showConversationBundle(bundle);
+    } catch (e) {
+      addSystem(`대화 불러오기 실패: ${e.message}`);
+    }
+  }, [addSystem, showConversationBundle]);
+
+  /* job 폴링 */
   const startJobPollingForKick = (
     jobId,
     {
@@ -444,11 +660,8 @@ const App = () => {
           return;
         }
 
-        const st = await getJobStatus(jobId).catch((e) => {
-          throw e;
-        });
+        const st = await getJobStatus(jobId).catch((e) => { throw e; });
         onProgress && onProgress(st);
-
         if (!st) return;
 
         if (st.status === "error") {
@@ -470,27 +683,22 @@ const App = () => {
             onError && onError(err);
           }
         }
-        // running이면 그냥 대기
       } catch (err) {
         console.warn("job 폴링 실패:", err);
       }
     }, intervalMs);
   };
 
-  /* --------- startSimulation: 초기 실행 (agent_mode: "off") --------- */
+  /* --------- startSimulation --------- */
   const startSimulation = async () => {
     if (!selectedScenario || !selectedCharacter) {
       addSystem("시나리오와 캐릭터를 먼저 선택해주세요.");
       return;
     }
     setAgentPreviewShown(false);
-
-    if (hasAgentRun || agentRunning) return;
-    // 최초 실행 표시 (한 번만 실행되게 함)
     setHasInitialRun(true);
     setAgentRunning(false);
 
-    // 기존 정리
     if (simIntervalRef.current) {
       clearInterval(simIntervalRef.current);
       simIntervalRef.current = null;
@@ -510,70 +718,26 @@ const App = () => {
     setShowReportPrompt(false);
 
     addSystem(
-      `시뮬레이션(초기 대화) 시작: ${selectedScenario.name} / ${selectedCharacter.name}`,
+      `오케스트레이터 시뮬레이션 시작: ${selectedScenario.name} / ${selectedCharacter.name}`,
     );
 
     try {
-      const payload = {
-        include_judgement: true,
-        max_turns: 200,
-        agent_mode: "off",
-      };
-      const kick = await runConversationAsync(
-        selectedScenario.id,
-        selectedCharacter.id,
-        payload,
-      );
-
-      if (!kick || !kick.job_id) {
-        addSystem("시뮬레이션 시작 실패: job_id를 받지 못했습니다.");
+      const res = await runReactSimulation({
+        victim_id: selectedCharacter.id,
+        offender_id: selectedScenario.id,
+        use_tavily: false,
+        max_turns: 15,
+        round_limit: 3,
+        round_no: 1
+      });
+      if (!res || !res.case_id) {
+        addSystem("시뮬레이션 실패: case_id를 받지 못했습니다.");
         setSimulationState("IDLE");
         return;
       }
-
-      // job이 done 되면 bundle 받아 재생 -> 재생 완료 후 에이전트 결정 UI 노출
-      startJobPollingForKick(kick.job_id, {
-        onProgress: (st) => {
-          /* optional */
-        },
-        onDone: (bundle) => {
-          // 리포트용 전체 번들 저장
-          setDefaultCaseData(bundle);
-          setSessionResult((prev) => ({
-            ...(prev || {}),
-            phishing: bundle.phishing ?? prev?.phishing ?? null,
-            isPhishing: bundle.phishing ?? prev?.isPhishing ?? null,
-            evidence: bundle.evidence ?? prev?.evidence ?? null,
-            totalTurns: bundle.total_turns ?? prev?.totalTurns ?? null,
-          }));
-
-          // 초기 재생은 use_agent === true 인 항목을 제외
-          const initialLogs = filterLogsByAgentFlag(bundle.logs || [], {
-            forAgent: false,
-          });
-
-          if (initialLogs.length === 0) {
-            addSystem(
-              "표시할 초기 대화 로그가 없습니다 (use_agent=false 필터 적용).",
-            );
-            setPendingAgentDecision(true);
-            return;
-          }
-
-          playLogs(initialLogs, { append: false, speed: 700 }, () => {
-            setPendingAgentDecision(true);
-            addSystem(
-              "대화 재생이 완료되었습니다. 에이전트 사용 여부를 선택해주세요.",
-            );
-          });
-        },
-
-        onError: (err) => {
-          console.error("초기 job 오류:", err);
-          addSystem("초기 시뮬레이션 중 오류가 발생했습니다.");
-          setSimulationState("IDLE");
-        },
-      });
+      setCurrentCaseId(res.case_id);
+      const bundle = await getConversationBundle(res.case_id);
+      showConversationBundle(bundle);
     } catch (err) {
       console.error("시뮬레이션 실행 실패:", err);
       addSystem("시뮬레이션 실행 실패 (콘솔 로그 확인).");
@@ -581,21 +745,17 @@ const App = () => {
     }
   };
 
-  /* --------- declineAgentRun: '아니요' 처리 (추가 실행 없음) --------- */
+  /* --------- declineAgentRun --------- */
   const declineAgentRun = () => {
     setPendingAgentDecision(false);
     setShowReportPrompt(true);
     addSystem("에이전트 사용을 건너뜁니다. 리포트를 확인할 수 있습니다.");
-    // hasInitialRun remains true; no further runs allowed unless resetToSelection()
   };
 
-  /* --------- startAgentRun: '예' 처리 (append 재생, 에이전트 한번만) --------- */
-  // 기존 startAgentRun 함수 전체를 아래로 교체하세요
+  /* --------- startAgentRun --------- */
   const startAgentRun = async () => {
     if (!currentCaseId) {
-      addSystem(
-        "case_id가 없습니다. 초기 시뮬레이션이 정상적으로 완료되었는지 확인하세요.",
-      );
+      addSystem("case_id가 없습니다. 초기 시뮬레이션이 정상적으로 완료되었는지 확인하세요.");
       return;
     }
     if (hasAgentRun || agentRunning) return;
@@ -603,16 +763,10 @@ const App = () => {
     setPendingAgentDecision(false);
     setSimulationState("PREPARE");
     setAgentRunning(true);
-    addSystem(
-      `에이전트 시뮬레이션을 시작합니다... (verbose=${agentVerbose ? "on" : "off"})`,
-    );
+    addSystem(`에이전트 시뮬레이션을 시작합니다... (verbose=${agentVerbose ? "on" : "off"})`);
 
     try {
-      // 1) 비동기 실행 kick
-      const kick = await runAgentForCaseAsync(currentCaseId, {
-        verbose: agentVerbose,
-        timeout: 120000,
-      });
+      const kick = await runAgentForCaseAsync(currentCaseId, { verbose: agentVerbose, timeout: 120000 });
       if (!kick || !kick.job_id) {
         addSystem("에이전트 실행 실패: job_id를 받지 못했습니다.");
         setAgentRunning(false);
@@ -620,21 +774,16 @@ const App = () => {
         return;
       }
 
-      // 2) /agent/job/{id} 폴링
       const jobId = kick.job_id;
       const start = Date.now();
       const POLL_INTERVAL = 1200;
-      const POLL_TIMEOUT = 180000; // 3분
+      const POLL_TIMEOUT = 180000;
 
       const poll = async () => {
-        // 타임아웃
-        if (Date.now() - start > POLL_TIMEOUT)
-          throw new Error("에이전트 폴링 타임아웃");
-
+        if (Date.now() - start > POLL_TIMEOUT) throw new Error("에이전트 폴링 타임아웃");
         const st = await getAgentJobStatus(jobId);
         if (!st) return null;
 
-        // ✅ result.preview 우선, 없으면 st.preview (서버 래핑 차이 흡수)
         const preview = st?.result?.preview ?? st?.preview ?? null;
         if (preview && !agentPreviewShown) {
           addSystem(
@@ -644,47 +793,34 @@ const App = () => {
               Array.isArray(preview.reasons) && preview.reasons.length
                 ? `- 이유: ${preview.reasons.slice(0, 3).join(" / ")}`
                 : "",
-              preview.guidance?.title
-                ? `- 지침: ${preview.guidance.title}`
-                : "",
-            ]
-              .filter(Boolean)
-              .join("\n"),
+              preview.guidance?.title ? `- 지침: ${preview.guidance.title}` : "",
+            ].filter(Boolean).join("\n"),
           );
           setSessionResult((prev) => ({ ...(prev || {}), preview }));
           setAgentPreviewShown(true);
         }
 
-        if (st.status === "error")
-          throw new Error(st.error || "agent job error");
+        if (st.status === "error") throw new Error(st.error || "agent job error");
         if (st.status === "not_found") throw new Error("agent job not_found");
         if (st.status === "running") return null;
 
-        // done
-        return st.result || st; // 라우터 구현에 따라 result 랩핑/직접일 수 있음
+        return st.result || st;
       };
 
       let result = null;
       while (true) {
         const r = await poll();
-        if (r) {
-          result = r;
-          break;
-        }
+        if (r) { result = r; break; }
         await new Promise((res) => setTimeout(res, POLL_INTERVAL));
       }
 
-      // 3) 결과 처리: case_id로 번들 가져오기
       const cid = result.case_id || currentCaseId;
       setCurrentCaseId(cid);
       const bundle = await getConversationBundle(cid);
 
       setDefaultCaseData(bundle);
 
-      // personalized가 번들에 없으면(백엔드 구현에 따라),
-      // 필요 시 별도 조회 시도 (엔드포인트가 있을 때만)
-      let personalized =
-        bundle.personalized || bundle.personalized_preventions || null;
+      let personalized = bundle.personalized || bundle.personalized_preventions || null;
       if (!personalized) {
         try {
           const pj = await getPersonalizedForCase(cid);
@@ -692,10 +828,7 @@ const App = () => {
         } catch (_) {}
       }
 
-      // 세션 상태 업데이트
-      const agentOnlyLogs = filterLogsByAgentFlag(bundle.logs || [], {
-        forAgent: true,
-      });
+      const agentOnlyLogs = filterLogsByAgentFlag(bundle.logs || [], { forAgent: true });
       setSessionResult((prev) => ({
         ...(prev || {}),
         phishing: bundle.phishing ?? prev?.phishing ?? null,
@@ -704,10 +837,9 @@ const App = () => {
         totalTurns: bundle.total_turns ?? prev?.totalTurns ?? null,
         agentUsed: true,
         agentLogs: agentOnlyLogs,
-        personalized, // 리포트에서 쓰세요
+        personalized,
       }));
 
-      // 4) 에이전트 로그만 append 재생
       if (!agentOnlyLogs.length) {
         addSystem("에이전트 전용 로그(use_agent=true)가 없습니다.");
         setHasAgentRun(true);
@@ -720,9 +852,7 @@ const App = () => {
         setHasAgentRun(true);
         setAgentRunning(false);
         setShowReportPrompt(true);
-        addSystem(
-          "에이전트 대화 재생이 완료되었습니다. 리포트를 확인할 수 있습니다.",
-        );
+        addSystem("에이전트 대화 재생이 완료되었습니다. 리포트를 확인할 수 있습니다.");
       });
     } catch (err) {
       console.error("에이전트 실행 실패:", err);
@@ -732,7 +862,7 @@ const App = () => {
     }
   };
 
-  /* --------- resetToSelection: 모든 플래그 초기화 --------- */
+  /* --------- resetToSelection --------- */
   const resetToSelection = () => {
     setSelectedScenario(null);
     setSelectedCharacter(null);
@@ -740,28 +870,9 @@ const App = () => {
     setSessionResult(null);
     setProgress(0);
     setSimulationState("IDLE");
-    // setPendingAgentDecision(false);
-    // setShowReportPrompt(false);
-
-    // setHasInitialRun(false);
-    // setHasAgentRun(false);
-    // setAgentRunning(false);
-
-    // setCurrentCaseId(null);
     setCurrentPage("simulator");
-
-    // if (simIntervalRef.current) {
-    //   clearInterval(simIntervalRef.current);
-    //   simIntervalRef.current = null;
-    // }
-    // if (jobPollRef.current) {
-    //   clearInterval(jobPollRef.current);
-    //   jobPollRef.current = null;
-    // }
-    // lastTurnRef.current = -1;
   };
 
-   /* --------- onBack 핸들러 추가 --------- */
   const handleBack = () => {
     setCurrentPage("landing");
   };
@@ -783,8 +894,11 @@ const App = () => {
   /* --------- pageProps 전달 --------- */
   const pageProps = {
     COLORS,
-    apiRoot: API_ROOT,     // ✅ 추가
-    onBack: handleBack,    // ✅ 추가
+    boardDelaySec,
+    setBoardDelaySec,
+    mockMode: MOCK_MODE,
+    apiRoot: API_ROOT,
+    onBack: handleBack,
     setCurrentPage,
     selectedScenario,
     setSelectedScenario,
@@ -816,8 +930,11 @@ const App = () => {
     progress,
     setProgress,
     setShowReportPrompt,
-    agentVerbose, // NEW
-    setAgentVerbose, // NEW
+    agentVerbose,
+    setAgentVerbose,
+    // 아래 두 개를 넘기면 UI에서 조절 UI를 만들 수 있습니다.
+    spinnerDelayMs,
+    setSpinnerDelayMs,
     victimImageUrl: selectedCharacter
       ? getVictimImage(selectedCharacter.photo_path)
       : null,
@@ -830,7 +947,7 @@ const App = () => {
       )}
       {currentPage === "simulator" && <SimulatorPage {...pageProps} />}
       {currentPage === "report" && (
-        <ReportPage {...pageProps} defaultCaseData={defaultCaseData} />
+        <ReportPage {...pageProps} apiRoot={API_ROOT} mockMode={MOCK_MODE} defaultCaseData={defaultCaseData} />
       )}
     </div>
   );
