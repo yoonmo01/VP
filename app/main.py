@@ -1,63 +1,3 @@
-# # app/main.py
-# from fastapi import FastAPI
-# from fastapi.middleware.cors import CORSMiddleware
-# from fastapi.staticfiles import StaticFiles
-# from pathlib import Path
-
-# import os
-# from app.core.config import settings
-# from app.db.session import engine
-# from app.db.base import Base
-
-# # ✅ __init__.py 덕분에 라우터들을 직접 가져올 수 있음
-# from app.routers import health, offenders, victims, conversations, admin_cases
-# from app.routers import conversations_read, simulator as simulator_router
-# from app.routers import agent as agent_router
-# from app.routers.personalized import router as personalized_router
-
-# Base.metadata.create_all(bind=engine)
-
-# app = FastAPI(
-#     title=settings.APP_NAME,
-#     docs_url="/docs",  # ← 원래처럼 /docs
-#     openapi_url="/openapi.json",
-#     redoc_url="/redoc",
-# )
-
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-# # 정적 파일
-# BASE_DIR = Path(__file__).resolve().parent
-# STATIC_DIR = BASE_DIR / "static"
-# app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-# # ✅ 여기서 .router 붙이지 말 것 (이미 APIRouter 객체임)
-# app.include_router(health, prefix=settings.API_PREFIX)
-# app.include_router(offenders, prefix=settings.API_PREFIX)
-# app.include_router(victims, prefix=settings.API_PREFIX)
-# app.include_router(conversations, prefix=settings.API_PREFIX)
-# app.include_router(admin_cases, prefix=settings.API_PREFIX)
-# app.include_router(personalized_router, prefix="/api")
-
-# # 이 3 개는 아직 모듈이므로 .router 필요
-# app.include_router(conversations_read.router, prefix=settings.API_PREFIX)
-# app.include_router(simulator_router.router, prefix=settings.API_PREFIX)
-# app.include_router(agent_router.router, prefix=settings.API_PREFIX)
-
-# @app.get("/")
-# async def root():
-#     return {"name": settings.APP_NAME, "env": settings.APP_ENV}
-
-# @app.get("/")
-# def index():
-#     return {"ok": True, "message": "See /docs"}
-
 # app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -76,6 +16,10 @@ from app.routers.personalized import router as personalized_router
 
 # React Agent 라우터만 추가
 from app.routers import react_agent_router
+
+#langsmith
+import os
+from langsmith import Client
 
 # DB 테이블 생성
 Base.metadata.create_all(bind=engine)
@@ -120,6 +64,27 @@ app.include_router(agent_router.router, prefix=settings.API_PREFIX)
 # React Agent 시스템 (MCP는 여기서 동적 호출)
 app.include_router(react_agent_router.router, prefix=settings.API_PREFIX)
 
+
+def _enable_langsmith():
+    # .env를 쓰는 경우
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=False)
+    except Exception:
+        pass
+
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    os.environ.setdefault("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
+    os.environ.setdefault("LANGCHAIN_PROJECT", "VoicePhish-Sim")
+
+    # 헬스체크 (여기서 에러나면 콘솔에 바로 보임)
+    try:
+        who = Client().whoami()
+        print(f"[LangSmith] enabled → user={who.get('name')}, project={os.getenv('LANGCHAIN_PROJECT')}")
+    except Exception as e:
+        print(f"[LangSmith] DISABLED: {e}")
+
+app.add_event_handler("startup", _enable_langsmith)
 
 @app.get("/")
 async def root():

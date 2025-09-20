@@ -15,12 +15,17 @@ from langchain_core.messages import HumanMessage, AIMessage
 from app.services.llm_providers import attacker_chat, victim_chat
 from app.services.admin_summary import summarize_case
 
+from langsmith.run_helpers import traceable
+
 # 기본 템플릿
 from app.services.prompts import (
     ATTACKER_PROMPT,
     VICTIM_PROMPT,
+    format_guidance_block,
 )
 from app.schemas.conversation import ConversationRunRequest
+
+from langchain_core.tracers.context import tracing_v2_enabled
 
 # ─────────────────────────────────────────────────────────
 # 발화 하드캡(안전장치). 실제 "턴(티키타카)" 제한은 max_turns로 제어한다.
@@ -96,6 +101,7 @@ def _resolve_victim_prompt(template_id: str | None):
     return VICTIM_PROMPT
 
 
+@traceable(name="run_two_bot_simulation", run_type="chain",tags=["voicephish", "simulation"])
 def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UUID, int]:
     """
     시뮬레이터 메인.
@@ -169,6 +175,20 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
         guidance_text = getattr(req, "guideline", None) or cs.get("guideline")
     if not guidance_type:
         guidance_type = getattr(req, "guidance_type", None) or cs.get("guidance_type")
+        
+    if isinstance(guidance_dict, dict) and (guidance_dict.get("text") or guidance_text):
+        guidance_block = format_guidance_block(
+            guidance_type=guidance_dict.get("type", guidance_type) or "",
+            guidance_text=guidance_dict.get("text", guidance_text) or "",
+            guidance_categories=guidance_dict.get("categories", []),
+            guidance_reasoning=guidance_dict.get("reasoning", ""),
+        )
+    else:
+        # 레거시 방식만 들어온 경우(또는 아무 지침도 없는 경우)
+        guidance_block = format_guidance_block(
+            guidance_type=guidance_type or "",
+            guidance_text=guidance_text or "",
+        )
 
     # ── LLM 체인 ──────────────────────────────────────
     templates: Dict[str, Any] = getattr(req, "templates", {}) or {}
@@ -189,11 +209,10 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
     knowledge_override = victim_profile.get("knowledge")
     traits_override    = victim_profile.get("traits")
 
-    history_attacker: list = []
-    history_victim: list = []
-    turn_index = 0                    # 반쪽 턴 인덱스(발화마다 +1)
-    attacks = replies = 0             # 반쪽 턴 카운트(각 역할 발화 수)
-    turns_executed = 0                # 진짜 턴(티키타카) 카운트
+    history_attacker: List[Any] = []
+    history_victim:   List[Any] = []
+    attacks = replies = 0
+    turns_executed = 0
 
     # ── Step-Lock: 단계와 커서 ─────────────────────────
     scenario_all = (
@@ -215,111 +234,150 @@ def run_two_bot_simulation(db: Session, req: ConversationRunRequest) -> Tuple[UU
     last_victim_text = ""
     last_offender_text = ""
 
+    # ▶ 이어쓰기: 동일 case_id/run_no로 재실행 시 turn_index 재시작 방지
+    existing_max_turn = (
+        db.query(func.max(m.ConversationLog.turn_index))
+          .filter(m.ConversationLog.case_id == case.id,
+                  m.ConversationLog.run == run_no)
+          .scalar()
+    )
+    turn_index = int((existing_max_turn or -1) + 1)  # 없으면 0부터
+
     # ── max_turns(티키타카 횟수) 보정 ──────────────────
     max_turns = getattr(req, "max_turns", None) or 15
 
-    for _ in range(max_turns):
-        # ---- 공격자 발화(반쪽 턴) ----
-        if attacks >= MAX_OFFENDER_TURNS:
-            break
+    with tracing_v2_enabled():
+        for _ in range(max_turns):
+            # ---- 공격자 발화(반쪽 턴) ----
+            if attacks >= MAX_OFFENDER_TURNS:
+                break
 
-        current_step_str = steps[current_step_idx] if current_step_idx < len(steps) else ""
+            current_step_str = steps[current_step_idx] if current_step_idx < len(steps) else ""
 
-        attacker_msg = attacker_chain.invoke({
-            "history":       history_attacker,
-            "last_victim":   last_victim_text,
-            "current_step":  current_step_str,
-            "guidance":      guidance_text or "",
-            "guidance_type": guidance_type or "",
-        })
-        attacker_text = getattr(attacker_msg, "content", str(attacker_msg)).strip()
-
-        _save_turn(
-            db,
-            case.id,
-            offender.id,
-            victim.id,
-            turn_index,
-            "offender",
-            attacker_text,
-            label=None,
-            use_agent=use_agent,
-            run=run_no,
-            guidance_type=guidance_type,
-            guideline=guidance_text,
+            attacker_msg = (
+            attacker_chain
+            .with_config({
+                "run_name": "attacker_turn",
+                "tags": ["voicephish","simulation","attacker", f"case:{case.id}", f"round:{run_no}"],
+                "metadata": {
+                    "case_id": str(case.id),
+                    "round_no": run_no,
+                    "current_step_idx": current_step_idx,
+                    "guidance_type": guidance_type or "",
+                    "has_guidance": bool(guidance_text),
+                },
+            })
+            .invoke({
+                "history":       history_attacker,
+                "last_victim":   last_victim_text,
+                "current_step":  current_step_str,
+                "guidance_block": guidance_block if "guidance_block" in attacker_prompt.input_variables else None,
+                "guidance":       guidance_text   if "guidance"       in attacker_prompt.input_variables else None,
+                "guidance_type":  guidance_type   if "guidance_type"  in attacker_prompt.input_variables else None,
+            })
         )
-        history_attacker.append(AIMessage(attacker_text))
-        history_victim.append(HumanMessage(attacker_text))
-        last_offender_text = attacker_text
-        turn_index += 1
-        attacks += 1
+            attacker_text = getattr(attacker_msg, "content", str(attacker_msg)).strip()
 
-        # 실제 단계였을 때만 커서 전진
-        if current_step_idx < len(steps):
-            current_step_idx += 1
+            _save_turn(
+                db,
+                case.id,
+                offender.id,
+                victim.id,
+                turn_index,
+                "offender",
+                attacker_text,
+                label=None,
+                use_agent=use_agent,
+                run=run_no,
+                guidance_type=guidance_type,
+                guideline=guidance_text,
+            )
+            history_attacker.append(AIMessage(attacker_text))
+            history_victim.append(HumanMessage(attacker_text))
+            last_offender_text = attacker_text
+            turn_index += 1
+            attacks += 1
 
-        # 공격자 종료 선언 시: 피해자 종료 한 줄 후 종료
-        if _hit_end(attacker_text):
-            if replies < MAX_VICTIM_TURNS:
-                victim_text = VICTIM_END_LINE
-                _save_turn(
-                    db,
-                    case.id,
-                    offender.id,
-                    victim.id,
-                    turn_index,
-                    "victim",
-                    victim_text,
-                    label=None,
-                    use_agent=use_agent,
-                    run=run_no,
-                    guidance_type=guidance_type,
-                    guideline=guidance_text,
-                )
-                history_victim.append(AIMessage(victim_text))
-                history_attacker.append(HumanMessage(victim_text))
-                last_victim_text = victim_text
-                turn_index += 1
-                replies += 1
-            break  # 티키타카 카운트 증가 없이 종료
+            # 실제 단계였을 때만 커서 전진
+            if current_step_idx < len(steps):
+                current_step_idx += 1
 
-        # ---- 피해자 발화(반쪽 턴) ----
-        if replies >= MAX_VICTIM_TURNS:
-            break
+            # 공격자 종료 선언 시: 피해자 종료 한 줄 후 종료
+            if _hit_end(attacker_text):
+                if replies < MAX_VICTIM_TURNS:
+                    victim_text = VICTIM_END_LINE
+                    _save_turn(
+                        db,
+                        case.id,
+                        offender.id,
+                        victim.id,
+                        turn_index,
+                        "victim",
+                        victim_text,
+                        label=None,
+                        use_agent=use_agent,
+                        run=run_no,
+                        guidance_type=guidance_type,
+                        guideline=guidance_text,
+                    )
+                    history_victim.append(AIMessage(victim_text))
+                    history_attacker.append(HumanMessage(victim_text))
+                    last_victim_text = victim_text
+                    turn_index += 1
+                    replies += 1
+                break  # 티키타카 카운트 증가 없이 종료
 
-        victim_msg = victim_chain.invoke({
-            "history":       history_victim,
-            "last_offender": last_offender_text,
-            "meta":          meta_override if meta_override is not None else (getattr(victim, "meta", "정보 없음")),
-            "knowledge":     knowledge_override if knowledge_override is not None else (getattr(victim, "knowledge", "정보 없음")),
-            "traits":        traits_override if traits_override is not None else (getattr(victim, "traits", "정보 없음")),
-            "guidance":      guidance_text or "",
-            "guidance_type": guidance_type or "",
-        })
-        victim_text = getattr(victim_msg, "content", str(victim_msg)).strip()
+            # ---- 피해자 발화(반쪽 턴) ----
+            if replies >= MAX_VICTIM_TURNS:
+                break
 
-        _save_turn(
-            db,
-            case.id,
-            offender.id,
-            victim.id,
-            turn_index,
-            "victim",
-            victim_text,
-            label=None,
-            use_agent=use_agent,
-            run=run_no,
-            guidance_type=guidance_type,
-            guideline=guidance_text,
+            victim_msg = (
+            victim_chain
+            .with_config({
+                "run_name": "victim_turn",
+                "tags": ["voicephish","simulation","victim", f"case:{case.id}", f"round:{run_no}"],
+                "metadata": {
+                    "case_id": str(case.id),
+                    "round_no": run_no,
+                    "current_step_idx": current_step_idx,
+                },
+            })
+            .invoke({
+                "history":       history_victim,
+                "last_offender": last_offender_text,
+                "meta":          meta_override if meta_override is not None else getattr(victim, "meta", "정보 없음"),
+                "knowledge":     knowledge_override if knowledge_override is not None else getattr(victim, "knowledge", "정보 없음"),
+                "traits":        traits_override if traits_override is not None else getattr(victim, "traits", "정보 없음"),
+                "guidance_block": guidance_block if "guidance_block" in victim_prompt.input_variables else None,
+                "current_round":  run_no if "current_round" in victim_prompt.input_variables else None,
+                "previous_experience": (f"이전 {run_no-1}라운드의 경험" if run_no > 1 else "첫 번째 연락")
+                                      if "previous_experience" in victim_prompt.input_variables else None,
+            })
         )
-        history_victim.append(AIMessage(victim_text))
-        history_attacker.append(HumanMessage(victim_text))
-        last_victim_text = victim_text
-        turn_index += 1
-        replies += 1
+            victim_text = getattr(victim_msg, "content", str(victim_msg)).strip()
 
-        # 티키타카 1턴 완료
-        turns_executed += 1
+            _save_turn(
+                db,
+                case.id,
+                offender.id,
+                victim.id,
+                turn_index,
+                "victim",
+                victim_text,
+                label=None,
+                use_agent=use_agent,
+                run=run_no,
+                guidance_type=guidance_type,
+                guideline=guidance_text,
+            )
+            history_victim.append(AIMessage(victim_text))
+            history_attacker.append(HumanMessage(victim_text))
+            last_victim_text = victim_text
+            turn_index += 1
+            replies += 1
+
+            # 티키타카 1턴 완료
+            turns_executed += 1
 
     # 관리자 요약/판정 실행
     summarize_case(db, case.id)

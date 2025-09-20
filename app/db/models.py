@@ -44,7 +44,7 @@ class AdminCase(Base):
     scenario: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     # 기존
-    phishing: Mapped[bool | None] = mapped_column()
+    phishing: Mapped[bool | None] = mapped_column(sa.Boolean, nullable=True)
     evidence: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="running")
     defense_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -126,8 +126,7 @@ class ConversationRound(Base):
     )
 
     # MCP 반환 본문
-    turns: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=list  # ← 리스트(턴 배열)
+    turns: Mapped[list] = mapped_column(JSONB, nullable=False, default=list  # ← 리스트(턴 배열)
     )
     ended_by: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     stats: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

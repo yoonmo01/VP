@@ -155,51 +155,35 @@ def make_sim_tools(db: Session):
         description="시나리오/피해자/지침을 바탕으로 공격자/피해자 프롬프트를 생성한다. Action Input은 {'data': {'scenario':{...},'victim_profile':{...},'guidance':{'type':'A|P','text':'...'}}}"
     )
     def compose_prompts(data: Any) -> Dict[str, str]:
-        """
-        prompts.py의 ChatPromptTemplate(ATTACKER_PROMPT / VICTIM_PROMPT)를 사용해
-        'system' 프롬프트 문자열을 생성한다.
-        반환: {"attacker_prompt": <system>, "victim_prompt": <system>}
-        """
+        """공격자/피해자 역할 프롬프트를 구성한다(실제 기관/계좌/번호 금지 규칙 포함)."""
         payload = _unwrap_data(data)
         scenario = _unwrap_data(payload.get("scenario") or {})
         victim_profile = _unwrap_data(payload.get("victim_profile") or {})
-        guidance = payload.get("guidance") or {}
+        guidance = payload.get("guidance")
 
-        # current_step: 시나리오 단계의 첫 항목 > description > 기본값
-        steps = scenario.get("steps") or []
-        description = scenario.get("description") or ""
-        current_step = (steps[0] if steps else description) or "시뮬레이션 시작"
+        # 🔹여기서 guidance 1라운드 가드 처리🔹
+        round_no = payload.get("round_no")
+        case_id  = payload.get("case_id") or payload.get("case_id_override")
+        if guidance and not case_id and (round_no is None or int(round_no) <= 1):
+            guidance = None
 
-        g_type = guidance.get("type", "") or ""
-        g_text = guidance.get("text", "") or ""
-
-        # 1) 공격자 system 프롬프트 렌더링
-        atk_msgs = ATTACKER_PROMPT.format_messages(
-            history=[],          # system만 뽑을 거라 비움
-            last_victim="",      # same
-            current_step=current_step,
-            guidance_type=g_type,
-            guidance=g_text,
+        safety = (
+            "[규칙] 실제 기관/계좌/번호는 금지(가명 사용). "
+            "앱 설치/링크 요구는 명시적으로만 표현.\n"
         )
-        attacker_prompt = atk_msgs[0].content  # 첫 메시지가 system
-
-        # 2) 피해자 system 프롬프트 렌더링
-        vctx = render_victim_from_profile(victim_profile)
-        vic_msgs = VICTIM_PROMPT.format_messages(
-            history=[],          # system만 뽑을 거라 비움
-            last_offender="",    # same
-            meta=vctx["meta"],
-            knowledge=vctx["knowledge"],
-            traits=vctx["traits"],
-            guidance_type=g_type,
-            guidance=g_text,
+        scen = scenario.get("description") or scenario.get("text") or str(scenario)
+        vic = (
+            f"메타: {victim_profile.get('meta')}\n"
+            f"지식: {victim_profile.get('knowledge')}\n"
+            f"성격: {victim_profile.get('traits')}\n"
         )
-        victim_prompt = vic_msgs[0].content  # 첫 메시지가 system
+        g_att = f"\n[지침-공격자]\n{guidance['text']}\n" if guidance and guidance.get("type") == "A" else ""
+        g_vic = f"\n[지침-피해자]\n{guidance['text']}\n" if guidance and guidance.get("type") == "P" else ""
 
-        return {
-            "attacker_prompt": attacker_prompt,
-            "victim_prompt": victim_prompt,
-        }
+        attacker_prompt = f"[보이스피싱 시뮬레이션]\n{safety}[시나리오]\n{scen}\n[역할] 너는 공격자다.{g_att}"
+        victim_prompt   = f"[보이스피싱 시뮬레이션]\n{safety}[피해자 프로파일]\n{vic}\n[역할] 너는 피해자다.{g_vic}"
+
+        return {"attacker_prompt": attacker_prompt, "victim_prompt": victim_prompt}
 
     @tool(
         "sim.persist_turn",
