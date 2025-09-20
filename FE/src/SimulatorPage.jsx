@@ -1,6 +1,6 @@
 // src/SimulatorPage.jsx
 import { useState, useMemo, useEffect, useRef } from "react";
-import { Play, Clock, Check, AlertTriangle } from "lucide-react";
+import { Play, Clock, Check, AlertTriangle, FileBarChart2 } from "lucide-react";
 import HudBar from "./HudBar";
 import Badge from "./Badge";
 import SelectedCard from "./SelectedCard";
@@ -198,6 +198,7 @@ const SimulatorPage = ({
       Math.round(initialCount + (currentCount - initialCount) * 2) ||
         initialCount + 4,
     );
+
     const pct = Math.min(
       100,
       Math.round((currentCount / Math.max(1, estimatedTotal)) * 100),
@@ -211,6 +212,23 @@ const SimulatorPage = ({
    // === ✅ 추가: "대화로그 페이지" 판별 (대화 메시지가 1개 이상일 때만 수사보드 표시) ===
   const hasChatLog = useMemo(() => countChatMessages(messages) > 0, [messages]);
 
+  // === 표시 조건: 대화 완료 + 에이전트 의사결정 완료 ===
+  // 대화 완전 종료 + 에이전트 의사결정 완료 + 에이전트 동작 중 아님
+  const showTTSButton =
+    simulationState === "FINISH" &&  // ✅ 끝났을 때만
+    !pendingAgentDecision &&          // ✅ 에이전트 예/아니오 결정 끝
+    !agentRunning &&                  // ✅ 에이전트 동작 중 아님
+    !!sessionResult;                  // (안전장치) 결과 객체 존재
+
+  // 이미 있는 hasChatLog 사용: 대화가 한 번이라도 진행됐는지
+  const showResetButtonsNow = simulationState === "IDLE" && !pendingAgentDecision;
+
+  // ✅ ‘대화 끝’ + 재선택 두 버튼이 활성화(둘 다 선택됨) + 실제로 대화가 있었음
+  const showTTSNow =
+    showResetButtonsNow &&
+    !!selectedScenario &&
+    !!selectedCharacter &&
+    hasChatLog;
 
   // 더미 데이터
   const dummyInsights = {
@@ -1525,69 +1543,66 @@ const SimulatorPage = ({
             </div>
 
             <div className="flex items-center gap-2">
-              {selectedScenario &&
-                simulationState === "IDLE" &&
-                !pendingAgentDecision && (
-                  <button
-                    onClick={() => {
-                      setSelectedScenario(null);
-                      setSelectedTag(null);
-                      addSystem("시나리오를 다시 선택하세요.");
-                    }}
-                    className="px-3 py-2 rounded-md text-sm font-medium border hover:opacity-90 transition"
-                    style={{
-                      backgroundColor: THEME.panelDark,
-                      borderColor: THEME.border,
-                      color: THEME.sub,
-                    }}
-                  >
-                    ← 시나리오 다시 선택
-                  </button>
-                )}
+            {/* 시나리오 다시 선택 */}
+            {selectedScenario && showResetButtonsNow && (
+              <button
+                onClick={() => {
+                  setSelectedScenario(null);
+                  setSelectedTag(null);
+                  addSystem("시나리오를 다시 선택하세요.");
+                }}
+                className="px-3 py-2 rounded-md text-sm font-medium border hover:opacity-90 transition"
+                style={{
+                  backgroundColor: THEME.panelDark,
+                  borderColor: THEME.border,
+                  color: THEME.sub,
+                }}
+              >
+                ← 시나리오 다시 선택
+              </button>
+            )}
 
-              {selectedCharacter &&
-                simulationState === "IDLE" &&
-                !pendingAgentDecision && (
-                  <button
-                    onClick={() => {
-                      setSelectedCharacter(null);
-                      addSystem("캐릭터를 다시 선택하세요.");
-                    }}
-                    className="px-3 py-2 rounded-md text-sm font-medium border hover:opacity-90 transition"
-                    style={{
-                      backgroundColor: THEME.panelDark,
-                      borderColor: THEME.border,
-                      color: THEME.sub,
-                    }}
-                  >
-                    ← 캐릭터 다시 선택
-                  </button>
-                )}
+            {/* 캐릭터 다시 선택 */}
+            {selectedCharacter && showResetButtonsNow && (
+              <button
+                onClick={() => {
+                  setSelectedCharacter(null);
+                  addSystem("캐릭터를 다시 선택하세요.");
+                }}
+                className="px-3 py-2 rounded-md text-sm font-medium border hover:opacity-90 transition"
+                style={{
+                  backgroundColor: THEME.panelDark,
+                  borderColor: THEME.border,
+                  color: THEME.sub,
+                }}
+              >
+                ← 캐릭터 다시 선택
+              </button>
+            )}
 
-                {/* ✅ TTS 모달 열기 버튼 추가 */}
-                <button
-                  onClick={() => setOpen(true)}
-                  style={{
-                    background: THEME.accent ?? THEME.border,
-                    color: THEME.text,
-                    padding: "10px 18px",
-                    borderRadius: 8,
-                    border: `1px solid ${THEME.border}`,
-                    boxShadow: "0 6px 18px rgba(0,0,0,0.2)",
-                    cursor: "pointer",
-                  }}
-                >
-                  TTS 모달 열기
-                </button>
+            {/* ✅ 두 버튼이 활성화 되는 조건에서만 TTS 버튼도 같이 노출 */}
+            {showTTSNow && (
+              <button
+                onClick={() => setOpen(true)}
+                style={{
+                  background: THEME.accent ?? THEME.border,
+                  color: THEME.text,
+                  padding: "10px 18px",
+                  borderRadius: 8,
+                  border: `1px solid ${THEME.border}`,
+                  boxShadow: "0 6px 18px rgba(0,0,0,0.2)",
+                  cursor: "pointer",
+                }}
+              >
+                TTS 모달 열기
+              </button>
+            )}
 
-                {/* ✅ 모달은 여기 그대로 유지 */}
-                <TTSModal
-                  isOpen={open}
-                  onClose={() => setOpen(false)}
-                  COLORS={THEME}
-                />
-              </div>
-            </div>
+            {/* 모달 컴포넌트는 그대로 두되, isOpen으로만 제어 */}
+            <TTSModal isOpen={open} onClose={() => setOpen(false)} COLORS={THEME} />
+          </div>
+          </div>
+
 
           {/* ===== 메인 영역: 좌(대화/선택) / 우(수사보드) ===== */}
           <div className="flex-1 min-h-0 flex" style={{ backgroundColor: THEME.bg }}>
@@ -2022,19 +2037,31 @@ const SimulatorPage = ({
           >
             <div className="flex items-center gap-5">
               <div className="flex items-center gap-3">
-                {sessionResult.isPhishing ? (
+                {/* {sessionResult.isPhishing ? (
                   <AlertTriangle size={24} color={THEME.warn} />
                 ) : (
                   <Check size={24} color={THEME.success} />
-                )}
-                <span
+                )} */}
+                {/* <span
                   className="font-semibold text-lg"
                   style={{
                     color: sessionResult.isPhishing ? THEME.warn : THEME.success,
                   }}
                 >
                   {sessionResult.isPhishing ? "피싱 감지" : "정상 대화"}
-                </span>
+                </span> */}
+                <div
+                  className="flex items-center gap-2 px-3 py-1 rounded-md border"
+                  style={{
+                    backgroundColor: THEME.panelDark,
+                    borderColor: THEME.border,
+                  }}
+                >
+                  <FileBarChart2 size={18} color={THEME.blurple} />
+                  <span className="text-sm font-medium" style={{ color: THEME.sub }}>
+                    리포트 준비됨
+                  </span>
+                </div>
               </div>
               <button
                 onClick={() => setCurrentPage("report")}
