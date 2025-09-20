@@ -1,13 +1,11 @@
 // src/CustomCharacterCreate.jsx
 import { useState } from "react";
-// import CustomCharacterModal from "./CustomCharacterModal";
 
 /** 내부에서 API_ROOT 계산 */
 const RAW_API_BASE = import.meta.env?.VITE_API_URL || window.location.origin;
 const API_BASE = RAW_API_BASE.replace(/\/$/, "");
 const API_PREFIX = "/api";
 const API_ROOT = `${API_BASE}${API_PREFIX}`;
-
 
 /* ========== 내부 모달 컴포넌트 ========== */
 function CustomCharacterModal({ open, onClose, onSave, theme }) {
@@ -22,13 +20,31 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
     blurple: "#5865F2",
   };
 
+  // 디지털 금융 리터러시 체크리스트 항목
+  const DFL_ITEMS = [
+    "디지털 금융 계약 시 서면 계약서에 반드시 서명한다.",
+    "온라인에서 공유하는 개인정보가 어떻게 활용되는지 확인한다.",
+    "투자하는 암호화폐가 법정화폐인지 여부를 알고 있다.",
+    "비밀번호를 타인과 공유하지 않고 안전하게 관리한다.",
+    "온라인 금융상품 구매 시 규제 여부를 확인한다.",
+    "본인의 재무정보를 온라인에 불필요하게 공유하지 않는다.",
+    "웹사이트 비밀번호를 정기적으로 변경한다.",
+    "공용 Wifi 환경에서 온라인 쇼핑을 피한다.",
+    "온라인 거래 시 웹사이트 보안(https, 자물쇠 표시)을 확인한다.",
+    "온라인 구매 시 이용약관을 꼼꼼히 확인한다.",
+  ];
+
   const DEFAULT = {
     name: "",
     ageBucket: "",
     gender: "",
     address: "",
     education: "",
-    knowledge: { comparative_notes: [], competencies: [] },
+    knowledge: {
+      comparative_notes: [],
+      competencies: [],
+      digital_finance_literacy: [], // ✅ 새 필드: 체크한 문구 배열로 저장
+    },
     traits: {
       ocean: {
         openness: "낮음",
@@ -45,6 +61,35 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
   const [form, setForm] = useState(DEFAULT);
   const set = (patch) => setForm((prev) => ({ ...prev, ...patch }));
 
+  // OCEAN 토글 헬퍼
+  const OCEAN_LABEL = {
+    openness: "개방성",
+    neuroticism: "신경성",
+    extraversion: "외향성",
+    agreeableness: "친화성",
+    conscientiousness: "성실성",
+  };
+  const setOcean = (key, value) =>
+    set({
+      traits: {
+        ...form.traits,
+        ocean: { ...form.traits.ocean, [key]: value },
+      },
+    });
+
+  // 디지털 금융 리터러시 체크 토글
+  const toggleDFL = (text) => {
+    const selected = new Set(form.knowledge.digital_finance_literacy || []);
+    if (selected.has(text)) selected.delete(text);
+    else selected.add(text);
+    set({
+      knowledge: {
+        ...form.knowledge,
+        digital_finance_literacy: Array.from(selected),
+      },
+    });
+  };
+
   const onSubmit = async (e) => {
     e.preventDefault();
     if (!form.name || !form.ageBucket || !form.gender || !form.address || !form.education) {
@@ -52,8 +97,8 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
       return;
     }
 
-    // 서버에 POST
-    const body = {
+    // 서버에 POST (부모의 onSave -> createCustomVictim 사용)
+    const payloadForParent = {
       name: form.name.trim(),
       meta: {
         age: form.ageBucket,
@@ -61,24 +106,24 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
         gender: form.gender,
         address: form.address,
       },
-      knowledge: form.knowledge,
-      traits: form.traits,
+      knowledge: {
+        comparative_notes: form.knowledge.comparative_notes || [],
+        competencies: form.knowledge.competencies || [],
+        digital_finance_literacy: form.knowledge.digital_finance_literacy || [], // ✅ 추가
+      },
+      traits: {
+        ...form.traits,
+        ocean: { ...form.traits.ocean }, // "높음"/"낮음"
+      },
       note: form.note,
     };
 
-    const res = await fetch(`${API_ROOT}/custom/victims`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      alert(`저장 실패: ${txt}`);
-      return;
+    try {
+      await onSave?.(payloadForParent);
+      onClose();
+    } catch (err) {
+      // 부모에서 에러 처리(alert)함
     }
-    const saved = await res.json();
-    onSave?.(saved);
-    onClose();
   };
 
   return (
@@ -93,7 +138,7 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
 
         <form onSubmit={onSubmit}>
           <div className="max-h-[70vh] overflow-y-auto px-5 py-4 space-y-4">
-            {/* 이름 */}
+            {/* 기본 정보 ---------------------------------------------------- */}
             <input
               placeholder="이름 *"
               value={form.name}
@@ -101,7 +146,6 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
               className="w-full p-2 rounded outline-none"
               style={{ backgroundColor: C.panelDark, color: C.text }}
             />
-            {/* 연령대 */}
             <select
               value={form.ageBucket}
               onChange={(e) => set({ ageBucket: e.target.value })}
@@ -113,7 +157,6 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
                 <option key={v} value={v}>{v}</option>
               ))}
             </select>
-            {/* 성별 */}
             <select
               value={form.gender}
               onChange={(e) => set({ gender: e.target.value })}
@@ -124,7 +167,6 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
               <option value="남성">남성</option>
               <option value="여성">여성</option>
             </select>
-            {/* 거주지 */}
             <input
               placeholder="거주지 *"
               value={form.address}
@@ -132,7 +174,6 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
               className="w-full p-2 rounded outline-none"
               style={{ backgroundColor: C.panelDark, color: C.text }}
             />
-            {/* 학력 */}
             <select
               value={form.education}
               onChange={(e) => set({ education: e.target.value })}
@@ -144,7 +185,83 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
               <option value="고등학교 졸업">고등학교 졸업</option>
               <option value="대학교 졸업">대학교 졸업</option>
             </select>
-            {/* 비고 */}
+
+            {/* 성격 (OCEAN) ------------------------------------------------ */}
+            <div className="pt-2">
+              <div className="mb-2 text-sm" style={{ color: C.sub }}>
+                성격 특성 (OCEAN) — 각 항목을 <b>높음/낮음</b>으로 선택
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {Object.keys(OCEAN_LABEL).map((key) => {
+                  const val = form.traits.ocean[key];
+                  const isHigh = val === "높음";
+                  return (
+                    <div
+                      key={key}
+                      className="flex items-center justify-between p-2 rounded border"
+                      style={{ backgroundColor: C.panelDark, borderColor: C.border }}
+                    >
+                      <span className="text-sm">{OCEAN_LABEL[key]}</span>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setOcean(key, "낮음")}
+                          className="px-3 py-1 rounded text-sm"
+                          style={{
+                            border: `1px solid ${C.border}`,
+                            backgroundColor: !isHigh ? C.blurple : "transparent",
+                            color: !isHigh ? "#000" : C.text,
+                          }}
+                        >
+                          낮음
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setOcean(key, "높음")}
+                          className="px-3 py-1 rounded text-sm"
+                          style={{
+                            border: `1px solid ${C.border}`,
+                            backgroundColor: isHigh ? C.blurple : "transparent",
+                            color: isHigh ? "#000" : C.text,
+                          }}
+                        >
+                          높음
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 디지털 금융 리터러시 ---------------------------------------- */}
+            <div className="pt-2">
+              <div className="mb-2 text-sm" style={{ color: C.sub }}>
+                디지털 금융 리터러시 (해당되는 항목을 체크)
+              </div>
+              <div className="space-y-2">
+                {DFL_ITEMS.map((item) => {
+                  const checked = (form.knowledge.digital_finance_literacy || []).includes(item);
+                  return (
+                    <label
+                      key={item}
+                      className="flex items-start gap-2 p-2 rounded border cursor-pointer"
+                      style={{ backgroundColor: C.panelDark, borderColor: C.border }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleDFL(item)}
+                        style={{ accentColor: C.blurple, marginTop: 4 }}
+                      />
+                      <span className="text-sm" style={{ color: C.text }}>{item}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 비고 -------------------------------------------------------- */}
             <textarea
               rows={3}
               placeholder="비고(선택)"
@@ -155,16 +272,20 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
             />
           </div>
 
-          <div className="px-5 py-4 border-t flex justify-end gap-3"
-               style={{ borderColor: C.border }}>
-            <button type="button" onClick={onClose}
+          <div className="px-5 py-4 border-t flex justify-end gap-3" style={{ borderColor: C.border }}>
+            <button
+              type="button"
+              onClick={onClose}
               className="px-4 py-2 rounded"
-              style={{ backgroundColor: C.panelDark, color: C.text }}>
+              style={{ backgroundColor: C.panelDark, color: C.text }}
+            >
               취소
             </button>
-            <button type="submit"
+            <button
+              type="submit"
               className="px-4 py-2 rounded text-white"
-              style={{ backgroundColor: C.blurple }}>
+              style={{ backgroundColor: C.blurple }}
+            >
               저장
             </button>
           </div>
@@ -175,8 +296,6 @@ function CustomCharacterModal({ open, onClose, onSave, theme }) {
 }
 
 /* ========== 외부에 노출되는 “생성 버튼/타일” 컴포넌트 ========== */
-
-
 
 async function postJson(url, body) {
   const res = await fetch(url, {
@@ -196,11 +315,16 @@ async function createCustomVictim(newCharFromModal) {
   const payload = {
     name: newCharFromModal.name,
     meta: newCharFromModal.meta || {},
-    knowledge: newCharFromModal.knowledge || {},
+    knowledge: {
+      ...(newCharFromModal.knowledge || {}),
+      // 서버가 모를 가능성에 대비해 빈 배열 보장
+      digital_finance_literacy:
+        newCharFromModal.knowledge?.digital_finance_literacy || [],
+    },
     traits: newCharFromModal.traits || {},
     note: newCharFromModal.note || "사용자 입력으로 생성",
   };
-  return postJson(`${API_ROOT}/custom/victims`, payload);
+  return postJson(`${API_ROOT}/make/victims/`, payload);
 }
 
 /**
@@ -262,7 +386,7 @@ export default function CustomCharacterCreate({ theme, onCreated }) {
             커스텀 캐릭터
           </div>
           <p className="mt-1 text-sm" style={{ color: C.sub }}>
-            나이/성별/거주지/학력과 성격, 지식을 직접 입력하여 저장
+            나이/성별/거주지/학력과 성격(OCEAN), 디지털 금융 리터러시를 입력하여 저장
           </p>
         </div>
       </button>

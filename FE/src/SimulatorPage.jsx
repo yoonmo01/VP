@@ -70,6 +70,9 @@ const SimulatorPage = ({
   const [customScenarios, setCustomScenarios] = useState([]);
   const [showCustomModal, setShowCustomModal] = useState(false);
 
+  //커스텀 캐릭터
+  const [customVictims, setCustomVictims] = useState([]);
+
   // --- 디자인 변경: 더 어두운 경찰 엠블럼 느낌 팔레트로 강제 덮어쓰기 ---
   const THEME = {
   ...(COLORS ?? BASE_THEME),
@@ -1808,12 +1811,15 @@ const SimulatorPage = ({
                       <CustomCharacterCreate
                         theme={THEME}
                         onCreated={(createdVictim) => {
+                          // 리스트 맨 끝에 추가
+                          setCustomVictims((prev) => [...prev, createdVictim]);
+                          // (옵션) 즉시 선택
                           setSelectedCharacter(createdVictim);
                           addSystem(`커스텀 캐릭터 저장 및 선택: ${createdVictim.name}`);
                         }}
                       />
 
-                      {characters.map((c) => (
+                      {[...characters, ...customVictims].map((c) => (
                         <button key={c.id} onClick={() => setSelectedCharacter(c)}>
                           <div
                             className="flex flex-col h-full rounded-2xl overflow-hidden border hover:border-[rgba(168,134,42,.25)] transition-colors"
