@@ -55,7 +55,7 @@ const MessageBubble = ({ message, selectedCharacter, victimImageUrl, COLORS }) =
                     >
                         <span className="mr-2">
                             <img
-                                src={new URL('./assets/offender_profile.png', import.meta.url).href}
+                                src={new URL('./assets/offender01.png', import.meta.url).href}
                                 alt="피싱범"
                                 className="w-8 h-8 rounded-full object-cover"
                             />
