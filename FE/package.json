@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google-cloud/text-to-speech": "^6.3.0",
+    "dotenv": "^17.2.2",
     "lucide-react": "^0.539.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
