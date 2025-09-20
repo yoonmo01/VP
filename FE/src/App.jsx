@@ -1,5 +1,5 @@
 // src/App.jsx
-import { useEffect, useLayoutEffect, useRef, useState, useCallback} from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import LandingPage from "./LandingPage";
 import SimulatorPage from "./SimulatorPage";
 import ReportPage from "./ReportPage";
@@ -47,14 +47,21 @@ async function loadJsonlFromPublic(path) {
     .map((line) => JSON.parse(line));
 }
 
-// JSONL → 프론트가 기대하는 번들 스키마로 변환
+/**
+ * JSONL → 번들 스키마
+ * 핵심 변경점: victim의 thoughts/dialogue를 "각각 별도 로그"로 push하며 kind를 부여
+ */
 function jsonlToConversationBundle(rows) {
   const case_id = "dummy-case-1";
   if (!Array.isArray(rows) || rows.length === 0) {
     return { case_id, logs: [], total_turns: 0 };
   }
+
   const t0 = Date.now();
-  const logs = rows.map((r, i) => {
+  const logs = [];
+  let i = 0;
+
+  for (const r of rows) {
     const role = (r.role || "").toLowerCase(); // "offender" | "victim" | "spinner_message" 등
     const textFromRow = typeof r.text === "string" ? r.text : "";
 
@@ -62,38 +69,60 @@ function jsonlToConversationBundle(rows) {
     const vThoughts = typeof jr.thoughts === "string" ? jr.thoughts.trim() : "";
     const vDialogue = typeof jr.dialogue === "string" ? jr.dialogue.trim() : "";
 
-    const content =
-      role === "victim"
-        ? [vThoughts, vDialogue].filter(Boolean).join("\n")
-        : textFromRow;
-
-    
     const isConvRaw = (r.is_convinced ?? jr.is_convinced);
     const isConvPct = isConvRaw == null ? null : normalizeConvincedToPct(isConvRaw);
 
-    return {
+    const base = {
       run: r.run_no ?? 1,
       turn_index: r.turn ?? i,
       role,
-      content,
       created_kst: new Date(t0 + i * 700).toISOString(),
       offender_name: "사칭 콜센터",
       victim_name: "피해자",
       use_agent: (r.run_no ?? 1) !== 1,
       guidance_type: null,
       guideline: null,
-      thoughts: vThoughts || null,
       is_convinced: isConvRaw ?? null,  // 1~10
       convinced_pct: isConvPct,         // 10~100
     };
-  });
 
-  // 정렬
+    // victim의 thoughts → 별도 로그
+    if (role === "victim" && vThoughts) {
+      logs.push({
+        ...base,
+        kind: "thought",
+        content: vThoughts, // 괄호 포함 그대로
+      });
+    }
+
+    // victim의 dialogue → 별도 로그
+    if (role === "victim" && vDialogue) {
+      logs.push({
+        ...base,
+        kind: "speech",
+        content: vDialogue,
+      });
+    }
+
+    // offender/기타(텍스트만 있는 경우) → 그대로 1로그
+    if (role !== "victim") {
+      logs.push({
+        ...base,
+        kind: "speech",
+        content: textFromRow,
+      });
+    }
+
+    i += 1;
+  }
+
+  // 정렬: run → turn → (같은 턴에서는 thought 먼저) → 시간
   logs.sort((a, b) => {
     const ra = (a.run ?? 0) - (b.run ?? 0);
     if (ra !== 0) return ra;
     const ta = (a.turn_index ?? 0) - (b.turn_index ?? 0);
     if (ta !== 0) return ta;
+    if (a.kind !== b.kind) return a.kind === "thought" ? -1 : 1;
     return new Date(a.created_kst) - new Date(b.created_kst);
   });
 
@@ -308,7 +337,7 @@ const App = () => {
   const [hasAgentRun, setHasAgentRun] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
 
-  // NEW: spinner 노출 시간 (기본 5초)
+  // NEW: spinner 노출 시간
   const [spinnerDelayMs, setSpinnerDelayMs] = useState(3000);
   const [boardDelaySec, setBoardDelaySec] = useState(18); // 오른쪽 보드 지연(초)
 
@@ -353,34 +382,36 @@ const App = () => {
       ...prev,
       { type: "analysis", content, timestamp: new Date().toLocaleTimeString() },
     ]);
- const addChat = (
-   sender,
-   content,
-   timestamp = null,
-   senderLabel = null,
-   side = null,
-   meta = {}
- ) =>
-   setMessages((prev) => [
-     ...prev,
-     {
-       type: "chat",
-       sender,
-       senderLabel: senderLabel ?? sender,
-       senderName: senderLabel ?? sender,
-       side: side ?? (sender === "offender" ? "left" : "right"),
-       content,
-       timestamp: timestamp ?? new Date().toLocaleTimeString(),
-       ...meta, // ✅ 메타(예: convincedPct) 주입
-     },
-   ]);
-  // NEW: spinner_message 추가
+  const addChat = (
+    sender,
+    content,
+    timestamp = null,
+    senderLabel = null,
+    side = null,
+    meta = {}
+  ) =>
+    setMessages((prev) => [
+      ...prev,
+      {
+        type: "chat",
+        sender,
+        senderLabel: senderLabel ?? sender,
+        senderName: senderLabel ?? sender,
+        side: side ?? (sender === "offender" ? "left" : "right"),
+        content,
+        timestamp: timestamp ?? new Date().toLocaleTimeString(),
+        ...meta, // ✅ 메타(예: convincedPct, variant) 주입
+      },
+    ]);
+  // spinner_message 추가 유틸(현재는 system으로 표기)
   const addSpinner = (content) =>
     setMessages((prev) => [
       ...prev,
-      { type: "system",
+      {
+        type: "system",
         content: content?.startsWith("🔄") ? content : `🔄 ${content}`,
-        timestamp: new Date().toLocaleTimeString(), },
+        timestamp: new Date().toLocaleTimeString(),
+      },
     ]);
 
   /* 스크롤 자동 하단 고정 */
@@ -442,7 +473,7 @@ const App = () => {
         append = false,
         speed = 1500,
         spinnerText: spinnerTextArg = null,
-        spinnerDelayOverride = null, // 개별 호출 시 오버라이드
+        spinnerDelayOverride = null,
       } = {},
       onComplete = null,
     ) => {
@@ -474,9 +505,10 @@ const App = () => {
       let prevRun = purifiedLogs[0]?.run ?? 1;
 
       const INITIAL_DELAY = 1000; // 첫 메시지 전 짧은 로딩
-      const INTERMISSION_DELAY = spinnerDelayOverride ?? spinnerDelayMs; // ✅ 조절 가능
+      const INTERMISSION_DELAY = spinnerDelayOverride ?? spinnerDelayMs;
 
-      const pushOne = (log) => {
+      // ====== (1) pushOne: 다음 로그까지 받아서 합칠 수 있게 변경 ======
+      const pushOne = (log, nextLog = null) => {
         const role = (log.role || "").toLowerCase();
         const offenderLabel =
           log.offender_name ||
@@ -495,23 +527,57 @@ const App = () => {
             : log.created_kst ?? new Date().toLocaleTimeString();
 
         const convincedPct =
-           (typeof log.convinced_pct === "number" ? log.convinced_pct : null) ??
-           (log.is_convinced != null ? normalizeConvincedToPct(log.is_convinced) : null);
+          (typeof log.convinced_pct === "number" ? log.convinced_pct : null) ??
+          (log.is_convinced != null ? normalizeConvincedToPct(log.is_convinced) : null);
 
-        if (role === "analysis" || role === "system" || log.label === "analysis") {
-          addAnalysis(content);
-        } else {
+        // victim thought + (다음 victim speech 같은 run/turn) → 한 카드로 병합
+        const canCombine =
+          (log.role || "").toLowerCase() === "victim" &&
+          log.kind === "thought" &&
+          nextLog &&
+          (nextLog.role || "").toLowerCase() === "victim" &&
+          nextLog.kind === "speech" &&
+          (nextLog.run ?? log.run) === log.run &&
+          (nextLog.turn_index ?? log.turn_index) === log.turn_index;
+
+        if (canCombine) {
+          const speechText = String(nextLog.content ?? "");
           addChat(
-           role || "offender",
-           content,
-           ts,
-           displayLabel,
-           side,
-           { convincedPct } // ✅ MessageBubble이 읽는 키로 전달
-         );
+            role,                     // victim
+            speechText,               // 카드의 본문은 '발화'
+            ts,
+            displayLabel,
+            side,
+            {
+              convincedPct,
+              variant: "combined",    // UI에서 결합 카드로 분기
+              thoughtText: content,   // 내부 박스(빨간)
+              speechText,             // 일반 발화(흰색)
+              run: log.run,
+              turn: log.turn_index,
+            }
+          );
+          return 2; // 두 로그를 소비
         }
+
+        // 기본(단일 로그) 처리
+        addChat(
+          role || "offender",
+          content,
+          ts,
+          displayLabel,
+          side,
+          {
+            convincedPct,
+            variant: log.kind === "thought" ? "thought" : "speech",
+            run: log.run,
+            turn: log.turn_index,
+          }
+        );
+        return 1; // 한 로그 소비
       };
 
+      // ====== (2) step: 병합(consumed=2) 반영 + intermission 구간에서도 병합 처리 ======
       const step = () => {
         if (idx >= total) {
           simIntervalRef.current = null;
@@ -523,24 +589,39 @@ const App = () => {
         const log = purifiedLogs[idx];
         const currRun = log.run ?? prevRun;
 
-        // run 1 -> 2 전환 시: spinner 표시 → 대기 → 다음 로그 출력
+        // run 1 -> 2 전환 시: spinner 표시 → 대기 → 다음 로그 출력 (병합 고려)
         if (prevRun === 1 && currRun === 2) {
           setSimulationState("INTERMISSION");
-          // spinner 메시지 추가
           setShowIntermissionSpinner(true);
           simIntervalRef.current = setTimeout(() => {
             setShowIntermissionSpinner(false);
             setSimulationState("RUNNING");
-            pushOne(log);
+
+            // intermission 뒤 첫 출력에서도 병합 여부 판단
+            const next = purifiedLogs[idx + 1];
+            let consumed = 1;
+            if (
+              (log.role || "").toLowerCase() === "victim" &&
+              log.kind === "thought" &&
+              next &&
+              (next.role || "").toLowerCase() === "victim" &&
+              next.kind === "speech" &&
+              (next.run ?? log.run) === log.run &&
+              (next.turn_index ?? log.turn_index) === log.turn_index
+            ) {
+              consumed = pushOne(log, next); // 2 소비
+            } else {
+              consumed = pushOne(log);       // 1 소비
+            }
 
             if (!append) {
-              setProgress(((idx + 1) / total) * 100);
+              setProgress(Math.min(100, ((idx + consumed) / total) * 100));
             } else {
-              setProgress((p) => Math.min(100, p + 100 / Math.max(1, total)));
+              setProgress((p) => Math.min(100, p + (consumed * 100) / Math.max(1, total)));
             }
 
             prevRun = currRun;
-            idx += 1;
+            idx += consumed;
             step();
           }, INTERMISSION_DELAY);
           return;
@@ -550,26 +631,41 @@ const App = () => {
 
         simIntervalRef.current = setTimeout(() => {
           setSimulationState("RUNNING");
-          pushOne(log);
+
+          // 일반 경로에서도 병합 판단
+          const next = purifiedLogs[idx + 1];
+          let consumed = 1;
+          if (
+            (log.role || "").toLowerCase() === "victim" &&
+            log.kind === "thought" &&
+            next &&
+            (next.role || "").toLowerCase() === "victim" &&
+            next.kind === "speech" &&
+            (next.run ?? log.run) === log.run &&
+            (next.turn_index ?? log.turn_index) === log.turn_index
+          ) {
+            consumed = pushOne(log, next); // 2 소비
+          } else {
+            consumed = pushOne(log);       // 1 소비
+          }
 
           if (!append) {
-            setProgress(((idx + 1) / total) * 100);
+            setProgress(Math.min(100, ((idx + consumed) / total) * 100));
           } else {
-            setProgress((p) => Math.min(100, p + 100 / Math.max(1, total)));
+            setProgress((p) => Math.min(100, p + (consumed * 100) / Math.max(1, total)));
           }
 
           prevRun = currRun;
-          idx += 1;
+          idx += consumed;
           step();
         }, delay);
       };
 
       step();
+
     },
     [
-      addAnalysis,
       addChat,
-      addSpinner,
       setMessages,
       setProgress,
       setSimulationState,
@@ -594,7 +690,9 @@ const App = () => {
       if (ra !== 0) return ra;
       const ta = (a.turn_index ?? 0) - (b.turn_index ?? 0);
       if (ta !== 0) return ta;
-      const da = new Date(a.created_at || a.created_kst || 0) - new Date(b.created_at || b.created_kst || 0);
+      const da =
+        new Date(a.created_at || a.created_kst || 0) -
+        new Date(b.created_at || b.created_kst || 0);
       return da;
     });
 
@@ -605,13 +703,12 @@ const App = () => {
       return;
     }
 
-    // 전체 로그 재생 (spinner_message는 playLogs 내부에서 추출/처리)
+    // 전체 로그 재생 (spinner_message는 playLogs 내부에서 처리)
     playLogs(
       logs,
       {
         append: false,
         speed: 700,
-        // spinnerDelayOverride: 7000, // ← 필요 시 개별 호출에서 덮어쓰기
       },
       () => {
         setShowReportPrompt(true);
@@ -932,7 +1029,6 @@ const App = () => {
     setShowReportPrompt,
     agentVerbose,
     setAgentVerbose,
-    // 아래 두 개를 넘기면 UI에서 조절 UI를 만들 수 있습니다.
     spinnerDelayMs,
     setSpinnerDelayMs,
     victimImageUrl: selectedCharacter
