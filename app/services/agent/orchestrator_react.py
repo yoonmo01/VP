@@ -190,7 +190,11 @@ REACT_SYS = (
     "    2) sim.compose_prompts 를 호출한다. (★ guidance 금지)\n"
     "    3) mcp.simulator_run 을 실행한다. (★ guidance 금지)\n"
     "    4) admin.judge 로 판정하고 phishing/이유를 기록한다.\n"
+    "       └ 이때 (case_id, run_no)만 보내지 말고, 반드시 방금 mcp.simulator_run Observation에서 받은\n"
+    "          {{\"turns\": [...]}} 또는 {{\"log\": {{...}}}} 를 함께 전달한다.\n"
     "    5) admin.save_prevention 으로 라운드 요약과 권고 스텝을 저장한다.\n"
+    "       ─ 저장 스키마는 다음 한 가지로 고정한다 (다른 키 금지):\n"
+    "        case_id, round_no, summary ,{{\"steps\": {{\"prevention_steps\": {{[...]}}}}\n"
     "  [라운드2~N]\n"
     "    6) admin.generate_guidance 로 현재 상황을 분석하여 맞춤형 지침을 생성한다.\n"
     "       • 시나리오, 피해자 프로필, 이전 판정 결과, 대화 로그를 종합 분석\n"
@@ -209,12 +213,18 @@ REACT_SYS = (
     "  • 동일 case_id 유지: 라운드1에서 받은 case_id 를 2라운드부터 case_id_override 로 반드시 넣는다.\n"
     "  • round_no 는 2부터 1씩 증가하는 정수로 설정한다.\n"
     "  • 도구 Action Input 은 한 줄 JSON 이고, 최상위 키는 반드시 \"data\" 여야 한다.\n"
+    "  • admin.save_prevention 호출 시 steps는 반드시 prevention_steps만 사용한다.\n"
     "  • mcp.simulator_run 의 허용 키는 다음만 가능하다:\n"
     "      offender_id, victim_id, scenario, victim_profile, templates, max_turns,\n"
     "      case_id_override, round_no, guidance(type/text)\n"
     "    (그 외 임의의 키 추가 금지)\n"
     "  • 도구 호출 전/후에 비JSON 텍스트, 코드펜스, 주석을 덧붙이지 말 것. (Action Input 에는 순수 JSON 한 줄만)\n"
     "  • 절대 도구를 호출하지 않고 결과를 직접 생성/요약하지 말 것.\n"
+    "\n"
+    "▼ 종료 후(단 한 번)\n"
+    "  • 모든 라운드가 끝나면 **오직 한 번만** admin.make_prevention 을 호출하여 최종 예방책을 생성한다.\n"
+    "    입력에는 누적된 대화 {{turns}}, 각 라운드 판정 목록 {{judgements}}, 실제 적용된 지침 목록 {{guidances}} 를 넣고,\n"
+    "    지정 스키마(personalized_prevention)의 JSON만 반환하도록 한다. 라운드 중간에는 호출 금지.\n"
     "\n"
     "▼ 오류/예외 복구 규칙\n"
     "  • 라운드1에서 case_id 추출에 실패하면 mcp.latest_case(offender_id, victim_id) 를 호출해 최신 case_id 를 복구한다.\n"
@@ -528,7 +538,28 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
             if not should_continue_rounds({"phishing": phishing}, round_no):
                 logger.info("[StopCondition] 종료 신호 수신 | round=%s", round_no)
                 break
+        
+        final_turns = []  # 필요하면 MCP에서 turn 축적해오던 리스트 사용
+        # 예: 라운드마다 mcp.simulator_run Observation에서 받은 로그를 모아놨다면 그걸 넣으세요.
+        # final_turns = accumulated_turns
 
+        final_payload = {
+            "case_id": case_id,            # ← 반드시 포함
+            "rounds": rounds_done,
+            "turns": final_turns,
+            "judgements": previous_judgments,
+            "guidances": guidance_history,
+            "format": "personalized_prevention"
+        }
+
+        ex.invoke(
+            {
+                "input": json.dumps({"data": final_payload}, ensure_ascii=False)
+            },
+            callbacks=[cap]
+        )
+        used_tools.append("admin.make_prevention")
+        
         return {
             "status": "success",
             "case_id": case_id,

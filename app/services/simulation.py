@@ -17,6 +17,10 @@ from app.services.admin_summary import summarize_case
 
 from langsmith.run_helpers import traceable
 
+import logging, sys
+from app.core.logging import get_logger
+logger = get_logger(__name__)
+
 # 기본 템플릿
 from app.services.prompts import (
     ATTACKER_PROMPT,
@@ -48,6 +52,18 @@ def _assert_turn_role(turn_index: int, role: str):
     if role != expected:
         raise ValueError(f"Turn {turn_index} must be {expected}, got {role}")
 
+
+conv_logger = logging.getLogger("vp.conversation")
+if not conv_logger.handlers:
+    h = logging.StreamHandler(sys.stdout)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    h.setFormatter(fmt)
+    conv_logger.addHandler(h)
+    conv_logger.setLevel(logging.INFO)
+    conv_logger.propagate = False
+
+def _shorten(s: str, n: int = 300) -> str:
+    return " ".join((s or "").split())[:n]
 
 def _save_turn(
     db: Session,
@@ -82,6 +98,12 @@ def _save_turn(
     )
     db.add(log)
     db.commit()
+
+    print(f"[Conversation][case:{case_id}][run:{run}][turn:{turn_index}][{role}] {_shorten(content)}")
+
+    conv_logger.info(
+    f"[Conversation][case:{case_id}][run:{run}][turn:{turn_index}][{role}] {_shorten(content)}"
+)
 
 
 def _hit_end(text: str) -> bool:

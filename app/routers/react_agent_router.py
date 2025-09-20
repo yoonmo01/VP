@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -58,6 +58,10 @@ def start_simulation(req: SimulationStartRequest, db: Session = Depends(get_db))
         payload: Dict[str, Any] = req.model_dump(mode="python")
         payload["use_tavily"] = tavily_used_flag
 
+        # ★ 없으면 새로 생성해서 주입
+        if not payload.get("case_id"):
+            payload["case_id"] = str(uuid4())
+            
         result: Dict[str, Any] = run_orchestrated(db, payload)
 
         if result.get("status") != "success":

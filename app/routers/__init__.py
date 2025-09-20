@@ -5,4 +5,4 @@ from .victims import router as victims
 from .conversations import router as conversations
 from .admin_cases import router as admin_cases
 
-__all__ = ["health", "offenders", "victims", "conversations", "admin_cases"]
+__all__ = ["health", "offenders", "victims", "conversations", "admin_cases", "tts_router"]

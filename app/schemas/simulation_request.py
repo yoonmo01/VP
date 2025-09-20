@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Annotated
 from pydantic import BaseModel, Field, model_validator, field_validator, ConfigDict
+from uuid import UUID
 
 # ─────────────────────────────────────────────────────────
 # 더미/빈 값 판별 유틸
@@ -86,6 +87,7 @@ class SimulationStartRequest(BaseModel):
 
     # 🔧 라운드/케이스 제어
     round_limit: Optional[int] = 3              # 오케스트레이터가 2~5로 클램프
+    case_id: Optional[UUID] = None
     case_id_override: Optional[str] = None      # 같은 케이스로 이어갈 때 사용(2라운드~)
     round_no: Optional[int] = 1                 # 현재 라운드(로그/디버깅 목적)
 

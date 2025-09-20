@@ -17,6 +17,8 @@ from app.routers.personalized import router as personalized_router
 # React Agent 라우터만 추가
 from app.routers import react_agent_router
 
+from app.routers import tts_router
+
 #langsmith
 import os
 from langsmith import Client
@@ -64,6 +66,7 @@ app.include_router(agent_router.router, prefix=settings.API_PREFIX)
 # React Agent 시스템 (MCP는 여기서 동적 호출)
 app.include_router(react_agent_router.router, prefix=settings.API_PREFIX)
 
+app.include_router(tts_router.router, prefix=settings.API_PREFIX)
 
 def _enable_langsmith():
     # .env를 쓰는 경우
@@ -100,7 +103,8 @@ async def root():
         "endpoints": {
             "docs": "/docs",
             "react_agent": f"{settings.API_PREFIX}/react-agent",
-            "simulation": f"{settings.API_PREFIX}/react-agent/simulation"
+            "simulation": f"{settings.API_PREFIX}/react-agent/simulation",
+            "tts": f"{settings.API_PREFIX}/tts/synthesize"
         }
     }
 
@@ -117,11 +121,21 @@ async def detailed_health():
     except Exception as e:
         db_status = f"unhealthy: {str(e)}"
 
+    try:
+        from google.cloud import texttospeech
+        tts_client = texttospeech.TextToSpeechClient()
+        # 간단한 테스트 호출
+        voices = tts_client.list_voices()
+        tts_status = "healthy"
+    except Exception as e:
+        tts_status = f"unhealthy: {str(e)}"
+
     return {
         "status": "healthy",
         "database": db_status,
         "react_agent": "ready",
         "mcp_integration": "on-demand",  # 필요시에만
+        "google_tts": tts_status,
         "llm_providers": {
             "attacker_chat": "ready",
             "victim_chat": "ready",
@@ -136,6 +150,7 @@ async def startup_event():
     print(f"🚀 {settings.APP_NAME} v2.0 - React Agent Enhanced")
     print(f"🤖 React Agent: Ready")
     print(f"🔗 MCP: On-demand (호출시에만 시작)")
+    print(f"🎵 Google TTS: Ready")
     print(f"📚 API Docs: http://localhost:{8000}/docs")
 
 

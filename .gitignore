@@ -46,3 +46,9 @@ secrets/
 
 # Alembic (generated cache & pyc are covered by patterns above)
 alembic/__pycache__/
+
+
+# Google Cloud credentials
+*.json
+vpsimulator-*.json
+credentials/
