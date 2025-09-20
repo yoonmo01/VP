@@ -1,14 +1,14 @@
 #app/schemas/offender.py
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict,List
 
 class OffenderCreate(BaseModel):
-    name: str
-    type: Optional[str] = None
-    profile: Dict[str, Any] = Field(default_factory=dict)   # 가변 기본값 안전
-    source: Dict[str, Any] = Field(default_factory=dict)    # {"title":..., "page":..., "url":...}
-    is_active: Optional[bool] = True
+    name: str = Field(..., max_length=100)
+    type: str = Field(..., max_length=50)
+    purpose: str
+    steps: List[str]
 
+    
 class OffenderOut(BaseModel):
     id: int
     name: str
