@@ -48,8 +48,9 @@ async function loadJsonlFromPublic(path) {
 }
 
 /**
- * JSONL → 번들 스키마
- * 핵심 변경점: victim의 thoughts/dialogue를 "각각 별도 로그"로 push하며 kind를 부여
+ * JSONL → 번들 스키마 (두 버전 병합)
+ * - V2 기능: victim thoughts/dialogue를 "별도 로그(kind)"로 분리
+ * - V1 호환: downstream이 하나의 content만 있어도 동작하도록 공통 필드 유지
  */
 function jsonlToConversationBundle(rows) {
   const case_id = "dummy-case-1";
@@ -86,7 +87,7 @@ function jsonlToConversationBundle(rows) {
       convinced_pct: isConvPct,         // 10~100
     };
 
-    // victim의 thoughts → 별도 로그
+    // V2: victim thoughts → 별도 로그
     if (role === "victim" && vThoughts) {
       logs.push({
         ...base,
@@ -95,7 +96,7 @@ function jsonlToConversationBundle(rows) {
       });
     }
 
-    // victim의 dialogue → 별도 로그
+    // V2: victim dialogue → 별도 로그
     if (role === "victim" && vDialogue) {
       logs.push({
         ...base,
@@ -163,7 +164,6 @@ async function getDummyBundle() {
 }
 
 /* ================== 공통 fetch 유틸 ================== */
-
 async function fetchWithTimeout(
   url,
   { method = "GET", headers = {}, body = null, timeout = 100000 } = {},
@@ -196,7 +196,6 @@ async function fetchWithTimeout(
 }
 
 /* ================== API 헬퍼 ================== */
-
 async function runReactSimulation(body) {
   if (MOCK_MODE) {
     return { case_id: (await getDummyBundle()).case_id };
@@ -207,7 +206,6 @@ async function runReactSimulation(body) {
     timeout: 600000,
   });
 }
-
 async function getOffenders() { return fetchWithTimeout(`${API_ROOT}/offenders/`); }
 async function getVictims() { return fetchWithTimeout(`${API_ROOT}/victims/`); }
 async function getConversationBundle(caseId) {
@@ -323,7 +321,7 @@ const App = () => {
   // selection / simulation
   const [selectedScenario, setSelectedScenario] = useState(null);
   const [selectedCharacter, setSelectedCharacter] = useState(null);
-  const [simulationState, setSimulationState] = useState("IDLE"); // IDLE, PREPARE, RUNNING, INTERMISSION, IDLE
+  const [simulationState, setSimulationState] = useState("IDLE"); // IDLE, PREPARE, RUNNING, INTERMISSION
   const [messages, setMessages] = useState([]);
   const [sessionResult, setSessionResult] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -337,9 +335,11 @@ const App = () => {
   const [hasAgentRun, setHasAgentRun] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
 
-  // NEW: spinner 노출 시간
-  const [spinnerDelayMs, setSpinnerDelayMs] = useState(3000);
-  const [boardDelaySec, setBoardDelaySec] = useState(18); // 오른쪽 보드 지연(초)
+  // NEW: spinner(전략회의) 노출 시간 + 보드 지연(두 버전 병합)
+  const [spinnerDelayMs, setSpinnerDelayMs] = useState(5000); // V1: 5000, V2: 3000 → 상향 기본값
+  const [intermissionText, setIntermissionText] = useState(""); // 중앙 모달 텍스트 (V1)
+  const [showIntermissionSpinner, setShowIntermissionSpinner] = useState(false); // 스피너 플래그 (V2)
+  const [boardDelaySec, setBoardDelaySec] = useState(18); // 오른쪽 보드 지연(초) (V2)
 
   // refs
   const scrollContainerRef = useRef(null);
@@ -353,7 +353,6 @@ const App = () => {
   const [currentCaseId, setCurrentCaseId] = useState(null);
 
   const [agentPreviewShown, setAgentPreviewShown] = useState(false);
-  const [showIntermissionSpinner, setShowIntermissionSpinner] = useState(false);
 
   // NEW: verbose 토글
   const [agentVerbose, setAgentVerbose] = useState(false);
@@ -382,13 +381,14 @@ const App = () => {
       ...prev,
       { type: "analysis", content, timestamp: new Date().toLocaleTimeString() },
     ]);
+  // 변형: addChat에 meta(예: convincedPct, variant, thoughtText 등) 파라미터 지원
   const addChat = (
     sender,
     content,
     timestamp = null,
     senderLabel = null,
     side = null,
-    meta = {}
+    meta = null,
   ) =>
     setMessages((prev) => [
       ...prev,
@@ -400,10 +400,11 @@ const App = () => {
         side: side ?? (sender === "offender" ? "left" : "right"),
         content,
         timestamp: timestamp ?? new Date().toLocaleTimeString(),
-        ...meta, // ✅ 메타(예: convincedPct, variant) 주입
+        // 설득도 퍼센트 및 변형 카드 정보 등 메타 전달
+        ...(meta || {}),
       },
     ]);
-  // spinner_message 추가 유틸(현재는 system으로 표기)
+  // spinner_message를 system으로도 띄울 수 있는 유틸 (V2)
   const addSpinner = (content) =>
     setMessages((prev) => [
       ...prev,
@@ -462,9 +463,13 @@ const App = () => {
   }, []);
 
   /**
-   * 대화 로그 재생
-   * - run 1 → 2 전환 구간에서 spinner_message를 표시하고 spinnerDelayMs 만큼 대기 후 2라운드 시작
-   * - JSONL에 role === 'spinner_message'가 있으면 그 텍스트 사용, 없으면 "생각중…" 사용
+   * 대화 로그 재생 (두 버전 병합)
+   * - run 1 → 2 전환 구간:
+   *   · V1: 중앙 모달 텍스트(intermissionText) 표시
+   *   · V2: showIntermissionSpinner 플래그 on
+   * - JSONL의 'spinner_message' 제거 후 재생. 텍스트는 위 두 UI에 활용
+   * - victim thought + speech 인접 시 결합 카드(variant: "combined") 생성
+   * - 각 로그의 is_convinced(1~10) → convincedPct(10~100) 메타 전달
    */
   const playLogs = useCallback(
     (
@@ -473,7 +478,7 @@ const App = () => {
         append = false,
         speed = 1500,
         spinnerText: spinnerTextArg = null,
-        spinnerDelayOverride = null,
+        spinnerDelayOverride = null, // 개별 호출 시 오버라이드
       } = {},
       onComplete = null,
     ) => {
@@ -482,12 +487,16 @@ const App = () => {
         return;
       }
 
-      // spinner_message 추출 및 본 로그에서 제외
+      // spinner_message 추출(텍스트만 참조), 표시 자체는 중앙 모달/스피너로
       const spinnerLog = logs.find((l) => (l.role || "").toLowerCase() === "spinner_message");
-      const spinnerText =
+      const spinnerTextRaw =
         spinnerTextArg ||
         (spinnerLog?.content && String(spinnerLog.content).trim()) ||
-        "생각중…";
+        null;
+      const spinnerTextDefault = "피싱범이 전략회의 중…";
+      const spinnerText = spinnerTextRaw || spinnerTextDefault;
+
+      // 실제 출력용 로그에서는 spinner_message 제거
       const purifiedLogs = logs.filter((l) => (l.role || "").toLowerCase() !== "spinner_message");
 
       if (!append) setMessages([]);
@@ -504,10 +513,10 @@ const App = () => {
       let idx = 0;
       let prevRun = purifiedLogs[0]?.run ?? 1;
 
-      const INITIAL_DELAY = 1000; // 첫 메시지 전 짧은 로딩
+      const INITIAL_DELAY = 10000; // 첫 메시지 직전 약간의 로딩 (V1 1500 / V2 1000 사이값)
       const INTERMISSION_DELAY = spinnerDelayOverride ?? spinnerDelayMs;
 
-      // ====== (1) pushOne: 다음 로그까지 받아서 합칠 수 있게 변경 ======
+      // 다음 로그를 받아 결합 가능
       const pushOne = (log, nextLog = null) => {
         const role = (log.role || "").toLowerCase();
         const offenderLabel =
@@ -530,7 +539,7 @@ const App = () => {
           (typeof log.convinced_pct === "number" ? log.convinced_pct : null) ??
           (log.is_convinced != null ? normalizeConvincedToPct(log.is_convinced) : null);
 
-        // victim thought + (다음 victim speech 같은 run/turn) → 한 카드로 병합
+        // V2: victim thought + (동턴 speech) → 결합 카드
         const canCombine =
           (log.role || "").toLowerCase() === "victim" &&
           log.kind === "thought" &&
@@ -544,15 +553,15 @@ const App = () => {
           const speechText = String(nextLog.content ?? "");
           addChat(
             role,                     // victim
-            speechText,               // 카드의 본문은 '발화'
+            speechText,               // 카드 본문은 발화
             ts,
             displayLabel,
             side,
             {
               convincedPct,
               variant: "combined",    // UI에서 결합 카드로 분기
-              thoughtText: content,   // 내부 박스(빨간)
-              speechText,             // 일반 발화(흰색)
+              thoughtText: content,   // 내부 상자(빨간 점선 등)
+              speechText,             // 실제 발화 텍스트
               run: log.run,
               turn: log.turn_index,
             }
@@ -560,7 +569,7 @@ const App = () => {
           return 2; // 두 로그를 소비
         }
 
-        // 기본(단일 로그) 처리
+        // 기본(단일 로그) 처리 — thought/speech 구분 메타 유지
         addChat(
           role || "offender",
           content,
@@ -577,7 +586,6 @@ const App = () => {
         return 1; // 한 로그 소비
       };
 
-      // ====== (2) step: 병합(consumed=2) 반영 + intermission 구간에서도 병합 처리 ======
       const step = () => {
         if (idx >= total) {
           simIntervalRef.current = null;
@@ -589,15 +597,17 @@ const App = () => {
         const log = purifiedLogs[idx];
         const currRun = log.run ?? prevRun;
 
-        // run 1 -> 2 전환 시: spinner 표시 → 대기 → 다음 로그 출력 (병합 고려)
+        // run 1 -> 2 전환: 중앙 모달 텍스트 + 스피너 플래그 병행
         if (prevRun === 1 && currRun === 2) {
           setSimulationState("INTERMISSION");
-          setShowIntermissionSpinner(true);
+          setIntermissionText(spinnerText);      // V1 방식
+          setShowIntermissionSpinner(true);      // V2 방식
           simIntervalRef.current = setTimeout(() => {
             setShowIntermissionSpinner(false);
+            setIntermissionText("");
             setSimulationState("RUNNING");
 
-            // intermission 뒤 첫 출력에서도 병합 여부 판단
+            // intermission 뒤 첫 출력에서도 결합 여부 판단
             const next = purifiedLogs[idx + 1];
             let consumed = 1;
             if (
@@ -632,7 +642,7 @@ const App = () => {
         simIntervalRef.current = setTimeout(() => {
           setSimulationState("RUNNING");
 
-          // 일반 경로에서도 병합 판단
+          // 일반 경로에서도 결합 판단
           const next = purifiedLogs[idx + 1];
           let consumed = 1;
           if (
@@ -662,9 +672,9 @@ const App = () => {
       };
 
       step();
-
     },
     [
+      addAnalysis,
       addChat,
       setMessages,
       setProgress,
@@ -690,9 +700,7 @@ const App = () => {
       if (ra !== 0) return ra;
       const ta = (a.turn_index ?? 0) - (b.turn_index ?? 0);
       if (ta !== 0) return ta;
-      const da =
-        new Date(a.created_at || a.created_kst || 0) -
-        new Date(b.created_at || b.created_kst || 0);
+      const da = new Date(a.created_at || a.created_kst || 0) - new Date(b.created_at || b.created_kst || 0);
       return da;
     });
 
@@ -703,12 +711,13 @@ const App = () => {
       return;
     }
 
-    // 전체 로그 재생 (spinner_message는 playLogs 내부에서 처리)
+    // 전체 로그 재생 (중앙 모달/스피너는 playLogs 내부에서 처리)
     playLogs(
       logs,
       {
         append: false,
         speed: 700,
+        // spinnerDelayOverride: 7000, // 필요시 호출부에서 덮어쓰기
       },
       () => {
         setShowReportPrompt(true);
@@ -727,7 +736,7 @@ const App = () => {
     }
   }, [addSystem, showConversationBundle]);
 
-  /* job 폴링 */
+  /* job 폴링 (두 버전 동일) */
   const startJobPollingForKick = (
     jobId,
     {
@@ -806,6 +815,8 @@ const App = () => {
     }
 
     setSimulationState("PREPARE");
+    setIntermissionText(""); // V1 초기화
+    setShowIntermissionSpinner(false); // V2 초기화
     setMessages([]);
     setProgress(0);
     setSessionResult(null);
@@ -967,6 +978,8 @@ const App = () => {
     setSessionResult(null);
     setProgress(0);
     setSimulationState("IDLE");
+    setIntermissionText("");        // V1 초기화
+    setShowIntermissionSpinner(false); // V2 초기화
     setCurrentPage("simulator");
   };
 
@@ -988,30 +1001,44 @@ const App = () => {
     };
   }, []);
 
-  /* --------- pageProps 전달 --------- */
+  /* --------- pageProps 전달 (두 버전 합집합) --------- */
   const pageProps = {
     COLORS,
-    boardDelaySec,
-    setBoardDelaySec,
     mockMode: MOCK_MODE,
     apiRoot: API_ROOT,
+
+    // 네비게이션
     onBack: handleBack,
     setCurrentPage,
+
+    // 선택/상태
     selectedScenario,
     setSelectedScenario,
     selectedCharacter,
     setSelectedCharacter,
-    simulationState,
+
+    // 시뮬레이션 상태
+    simulationState,         // PREPARE / RUNNING / INTERMISSION / IDLE
     setSimulationState,
-    messages,
+
+    // 인터미션(두 버전 동시 제공)
+    intermissionText,        // 중앙 모달 텍스트 (V1)
+    showIntermissionSpinner, // 스피너 플래그 (V2)
+
+    // 메시지
+    messages,                // 각 message에 convincedPct/variant 등 메타 포함
     addSystem,
     addAnalysis,
     addChat,
+
+    // 결과 및 제어
     sessionResult,
     resetToSelection,
     startSimulation,
     startAgentRun,
     declineAgentRun,
+
+    // 데이터
     scenarios,
     characters,
     scrollContainerRef,
@@ -1019,18 +1046,28 @@ const App = () => {
     dataLoading,
     dataError,
     currentCaseId,
+
+    // 플래그
     pendingAgentDecision,
     showReportPrompt,
     hasInitialRun,
     hasAgentRun,
     agentRunning,
+
+    // 진행률/미리보기/verbose
     progress,
     setProgress,
     setShowReportPrompt,
     agentVerbose,
     setAgentVerbose,
+
+    // 스피너/보드 지연
     spinnerDelayMs,
     setSpinnerDelayMs,
+    boardDelaySec,
+    setBoardDelaySec,
+
+    // 기타
     victimImageUrl: selectedCharacter
       ? getVictimImage(selectedCharacter.photo_path)
       : null,
@@ -1043,7 +1080,12 @@ const App = () => {
       )}
       {currentPage === "simulator" && <SimulatorPage {...pageProps} />}
       {currentPage === "report" && (
-        <ReportPage {...pageProps} apiRoot={API_ROOT} mockMode={MOCK_MODE} defaultCaseData={defaultCaseData} />
+        <ReportPage
+          {...pageProps}
+          apiRoot={API_ROOT}
+          mockMode={MOCK_MODE}
+          defaultCaseData={defaultCaseData}
+        />
       )}
     </div>
   );

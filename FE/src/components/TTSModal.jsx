@@ -5,7 +5,7 @@ import AudioWaveform from "./AudioWaveForm";
 import SpeakerAvatar from "./SpeakerAvatar";
 import DEFAULT_COLORS from "../constants/colors";
 import victim from "../../src/assets/victims/1.png";
-import criminal from "../../src/assets/victims/2.png";
+import criminal from "../../src/assets/offender01.png";
 
 const API_BASE = "http://127.0.0.1:8000";
 
@@ -20,34 +20,109 @@ const toUrl = (b64, mime) => {
 export default function TTSModal({ isOpen, onClose, COLORS }) {
   const theme = COLORS ?? DEFAULT_COLORS;
 
+  // 전체 로딩/데이터
   const [loading, setLoading] = useState(false);
-  const [dialogue, setDialogue] = useState([]);
-  const [urls, setUrls] = useState([]);
+  const [allItems, setAllItems] = useState([]);     // 전체 TTS 응답 아이템
+  const [allUrls, setAllUrls] = useState([]);       // 전체 url
+
+  // run별 분리 데이터
+  const [run1Items, setRun1Items] = useState([]);
+  const [run1Urls, setRun1Urls] = useState([]);
+  const [run2Items, setRun2Items] = useState([]);
+  const [run2Urls, setRun2Urls] = useState([]);
+
+  // 현재 재생 중 상태
+  const [dialogue, setDialogue] = useState([]);     // 현재 재생중인 아이템 리스트
+  const [urls, setUrls] = useState([]);             // 현재 재생중인 url 리스트
   const [idx, setIdx] = useState(-1);
   const [currentText, setCurrentText] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
 
   const audioRef = useRef(null);
 
-  useEffect(() => {
-    // console.log("TTS theme:", theme);
-  }, [theme]);
+  // --- utils: 응답 아이템 정규화
+  const normalizeItems = (items) =>
+    (items || []).map((it) => ({
+      ...it,
+      totalDurationSec: Number(it.totalDurationSec) || 0,
+      charTimeSec: Number(it.charTimeSec) || 0,
+    }));
 
-  const playAt = async (i, sources = null, itemsArr = null) => {
+  // --- run_no가 있으면 그대로 분리, 없으면 키워드/절반으로 분리
+  const splitByRun = (items) => {
+    const hasRun =
+      items.some((it) => "run_no" in it) ||
+      items.some((it) => "runNo" in it) ||
+      items.some((it) => "run" in it);
+
+    if (hasRun) {
+      const getRun = (it) => it.run_no ?? it.runNo ?? it.run ?? null;
+      const r1 = items.filter((it) => getRun(it) === 1);
+      const r2 = items.filter((it) => getRun(it) === 2);
+      return { r1, r2 };
+    }
+
+    // 키워드로 run2 시작점 추정
+    const PATTERN_RUN2 = /(금융감독원|임시\s*보관계정|새\s*휴대폰|원격제어\s*앱|보안\s*앱)/;
+    const idx2 = items.findIndex((it) => PATTERN_RUN2.test(it?.text || ""));
+    if (idx2 > 0) {
+      return { r1: items.slice(0, idx2), r2: items.slice(idx2) };
+    }
+
+    // 백업: 반으로 나누기
+    const mid = Math.floor(items.length / 2);
+    return { r1: items.slice(0, mid), r2: items.slice(mid) };
+  };
+
+  // --- fetch 한 번 해서 전부 받아오고 run별 세팅
+  const ensureFetched = async () => {
+    if (allItems.length > 0) return; // 이미 받아왔으면 스킵
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/tts/synthesize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "dialogue" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const data = await res.json();
+      const items = normalizeItems(data.items || []);
+      const urlsLocal = items.map((it) => toUrl(it.audioContent, it.contentType));
+
+      setAllItems(items);
+      setAllUrls(urlsLocal);
+
+      const { r1, r2 } = splitByRun(items);
+      const r1Urls = r1.map((it) => toUrl(it.audioContent, it.contentType));
+      const r2Urls = r2.map((it) => toUrl(it.audioContent, it.contentType));
+
+      setRun1Items(r1);
+      setRun1Urls(r1Urls);
+      setRun2Items(r2);
+      setRun2Urls(r2Urls);
+    } catch (e) {
+      alert(`TTS 오류: ${e.message}`);
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- 공통 재생 로직
+  const playAt = async (i, sources, itemsArr) => {
     const a = audioRef.current;
     if (!a) return;
-    const srcArray = sources || urls;
-    const itemsArray = itemsArr || dialogue;
-    if (!srcArray[i] || !itemsArray[i]) return;
+    if (!sources[i] || !itemsArr[i]) return;
 
-    const item = itemsArray[i];
+    const item = itemsArr[i];
     setIdx(i);
     setCurrentText(item.text || "");
     setIsPlaying(true);
 
     try {
       a.pause();
-      a.src = srcArray[i];
+      a.src = sources[i];
       a.load();
 
       await new Promise((resolve, reject) => {
@@ -63,43 +138,28 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
     }
   };
 
-  const handlePlayDialogue = async () => {
-    setLoading(true);
-    setDialogue([]);
-    setUrls([]);
+  // --- run 선택하여 재생
+  const playRun = async (runNo) => {
+    await ensureFetched();
+
+    const selItems = runNo === 2 ? run2Items : run1Items;
+    const selUrls = runNo === 2 ? run2Urls : run1Urls;
+
+    if (selItems.length === 0) {
+      alert("재생할 대화가 없습니다.");
+      return;
+    }
+    setDialogue(selItems);
+    setUrls(selUrls);
     setIdx(-1);
     setCurrentText("");
     setIsPlaying(false);
 
-    try {
-      const res = await fetch(`${API_BASE}/api/tts/synthesize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "dialogue" }),
-      });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json();
-      const items = (data.items || []).map((it) => ({
-        ...it,
-        totalDurationSec: Number(it.totalDurationSec) || 0,
-        charTimeSec: Number(it.charTimeSec) || 0,
-      }));
-
-      setDialogue(items);
-      const urlsLocal = items.map((it) => toUrl(it.audioContent, it.contentType));
-      setUrls(urlsLocal);
-      playAt(0, urlsLocal, items);
-    } catch (e) {
-      alert(`TTS 오류: ${e.message}`);
-      console.error(e);
-      setIsPlaying(false);
-    } finally {
-      setLoading(false);
-    }
+    // 첫 컷 재생
+    playAt(0, selUrls, selItems);
   };
 
+  // --- 오디오 이벤트
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
@@ -137,8 +197,6 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
   const currentSpeaker = current?.speaker;
 
   const modalShadow = `0 8px 30px ${theme.black}80, 0 2px 8px ${theme.accent}20`;
-
-  // 파형/아바타 사이즈 연동 상수 (고정 사이즈 내에서 조절)
   const WAVE_HEIGHT = 140;
   const WAVE_MAX_BAR = 120;
 
@@ -150,7 +208,6 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
         aria-hidden="true"
       />
 
-      {/* ✅ 고정 크기 모달 (가로 900px, 세로 760px) */}
       <div
         className="relative w-[900px] mx-4 rounded-3xl border overflow-hidden flex flex-col"
         style={{
@@ -171,7 +228,7 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
           }}
         >
           <h2 className="text-2xl font-bold" style={{ color: theme.text }}>
-            TTS 대화 시뮬레이션
+            음성 대화 시뮬레이션
           </h2>
           <button
             onClick={onClose}
@@ -186,51 +243,42 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
           </button>
         </div>
 
-        {/* ✅ 본문: overflow 숨김으로 스크롤 제거 */}
         <div className="flex-1 px-8 py-6 flex flex-col overflow-hidden">
-          {/* 상단 시나리오 전환 버튼바 + 주요 액션 */}
+          {/* 상단 버튼바: 첫/두 번째 대화 분리 재생 */}
           <div className="flex items-center justify-between gap-3 mb-4">
             <div className="flex items-center gap-3">
               <button
-                onClick={() =>
-                  alert("다음 시나리오(다른 수법)로 이어집니다. (추후 구현)")
-                }
+                onClick={() => playRun(1)}
+                disabled={loading}
                 className="px-4 py-2 rounded-md text-sm font-semibold transition-colors"
                 style={{
                   backgroundColor: theme.panel,
                   color: theme.text,
                   border: `1px solid ${theme.border}`,
                 }}
+                title="run_no=1 대화 재생"
               >
-                다음 시나리오 이어가기
+                첫 번째 대화
               </button>
+
               <button
-                onClick={() => alert("다른 수법 #2 (추후 구현)")}
-                className="px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                onClick={() => playRun(2)}
+                disabled={loading}
+                className="px-4 py-2 rounded-md text-sm font-semibold transition-colors"
                 style={{
-                  backgroundColor: theme.panelDark,
-                  color: theme.sub,
+                  backgroundColor: theme.panel,
+                  color: theme.text,
                   border: `1px solid ${theme.border}`,
                 }}
+                title="run_no=2 대화 재생"
               >
-                다른 수법 #2
-              </button>
-              <button
-                onClick={() => alert("다른 수법 #3 (추후 구현)")}
-                className="px-4 py-2 rounded-md text-sm font-medium transition-colors"
-                style={{
-                  backgroundColor: theme.panelDark,
-                  color: theme.sub,
-                  border: `1px solid ${theme.border}`,
-                }}
-              >
-                다른 수법 #3
+                두 번째 대화
               </button>
             </div>
 
-            {/* 주요 액션: 대화 재생 */}
+            {/* 원클릭 사전 로딩 버튼 (선택) */}
             <button
-              onClick={handlePlayDialogue}
+              onClick={ensureFetched}
               disabled={loading}
               className="px-5 py-2.5 rounded-lg font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-95"
               style={{
@@ -239,8 +287,8 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
                 boxShadow: `0 8px 24px ${theme.blurple}26, 0 2px 8px ${theme.black}33`,
                 border: `1px solid ${theme.blurple}55`,
               }}
-              aria-label="대화 재생"
-              title="대화 재생"
+              aria-label="데이터 미리 불러오기"
+              title="데이터 미리 불러오기"
             >
               {loading ? (
                 <div className="flex items-center gap-2">
@@ -250,13 +298,12 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
               ) : (
                 <div className="flex items-center gap-2">
                   <Mic size={16} />
-                  대화 재생
+                  데이터 불러오기
                 </div>
               )}
             </button>
           </div>
 
-          {/* 버튼바 하단 분리선(선택) */}
           <div
             className="w-full h-px my-2"
             style={{
@@ -265,7 +312,6 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
             }}
           />
 
-          {/* 중앙 배치: 위/아래 가변 여백으로 시각적 중앙 정렬 */}
           <div className="flex-1" />
 
           {/* 프로필 + 파형 */}
@@ -310,7 +356,7 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
 
           <div className="flex-1" />
 
-          {/* 대화 로그(크게, 중앙 정렬) */}
+          {/* 대화 텍스트 표시 */}
           <div
             className="min-h-24 p-5 rounded-lg border text-center flex items-center justify-center"
             style={{
@@ -321,7 +367,7 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
             }}
           >
             <p className="text-lg leading-relaxed" style={{ maxWidth: 980 }}>
-              {currentText || "대화를 시작하려면 위의 ‘대화 재생’ 버튼을 눌러주세요."}
+              {currentText || "‘첫 번째 대화’ 또는 ‘두 번째 대화’를 눌러 재생하세요."}
             </p>
           </div>
         </div>
@@ -331,6 +377,7 @@ export default function TTSModal({ isOpen, onClose, COLORS }) {
     </div>
   );
 }
+
 
 
 // // src/components/TTSModal.jsx
