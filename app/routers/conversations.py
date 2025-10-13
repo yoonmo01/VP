@@ -218,3 +218,63 @@ def get_conversation_tail(
         "phishing": None,
         "evidence": None,
     }
+
+from app.db import models as m
+
+@router.get("/{case_id}")
+def get_conversation_bundle(
+    case_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """
+    프론트엔드용 전체 번들: 로그 + 판정 + 예방책 + preview
+    """
+    # 1) 모든 로그 조회
+    rows = fetch_logs_by_case(db, case_id)
+    logs = [
+        ConversationLogOut(
+            turn_index=get_val(r, "turn_index", 0),
+            role="offender" if get_val(r, "speaker") == "offender" else "victim",
+            content=get_val(r, "text", ""),
+            label=get_val(r, "label"),
+            created_kst=to_kst(get_val(r, "created_at")),
+            offender_name=get_val(r, "offender_name"),
+            victim_name=get_val(r, "victim_name"),
+            use_agent=get_val(r, "use_agent", False),
+            run=get_val(r, "run", 1),
+            guidance_type=get_val(r, "guidance_type"),
+            guideline=get_val(r, "guideline"),
+        ) for r in rows
+    ]
+    
+    # 2) 케이스 정보
+    case = db.get(m.AdminCase, case_id)
+    if not case:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="케이스를 찾을 수 없습니다")
+    
+    # 3) 예방책 조회 (가장 최신)
+    pp = db.query(m.PersonalizedPrevention)\
+        .filter(m.PersonalizedPrevention.case_id == case_id)\
+        .filter(m.PersonalizedPrevention.is_active == True)\
+        .order_by(m.PersonalizedPrevention.created_at.desc())\
+        .first()
+    
+    # 4) scenario.last_analysis에서 preview 추출
+    scenario = case.scenario or {}
+    last_analysis = scenario.get("last_analysis", {})
+    
+    return {
+        "case_id": str(case_id),
+        "total_turns": len(logs),
+        "logs": logs,
+        "phishing": case.phishing,
+        "evidence": case.evidence,
+        "personalized": pp.content if pp else None,
+        "preview": {
+            "outcome": last_analysis.get("outcome"),
+            "phishing": last_analysis.get("phishing"),
+            "reasons": last_analysis.get("reasons", []),
+            "guidance": last_analysis.get("guidance", {}),
+        } if last_analysis else None,
+    }

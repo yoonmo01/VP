@@ -1,0 +1,40 @@
+# Core
+fastapi==0.111.0
+uvicorn[standard]==0.35.0
+
+# Config & Validation
+pydantic==2.11.1
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+
+# Database
+SQLAlchemy==2.0.31
+psycopg[binary]==3.2.10
+alembic==1.13.2
+
+# LLM / Agents
+langchain==0.3.27
+langchain-core==0.3.76
+langchain-openai==0.3.33
+langchain-google-genai==2.1.10
+langchain-community==0.3.27
+pandas==2.3.2
+
+# LangGraph & Orchestration
+langgraph==0.6.7
+langgraph-checkpoint==2.1.1
+langgraph-prebuilt==0.6.4
+langgraph-sdk==0.2.6
+
+# Tavily
+langchain-tavily==0.2.11
+tavily-python==0.7.12
+
+# Networking
+websockets==15.0.1
+
+# MCP (Streamable HTTP + CLI)
+mcp==1.14.0
+anyio==4.10.0
+
+google-cloud-texttospeech==2.16.5

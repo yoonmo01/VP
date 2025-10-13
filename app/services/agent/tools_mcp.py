@@ -7,6 +7,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 from langchain_core.tools import tool
 from app.core.logging import get_logger
+from datetime import datetime
 import re
 import websockets
 import socket
@@ -92,34 +93,27 @@ def _unwrap(data: Any) -> Dict[str, Any]:
 
     return obj
 
-# 여기서 안씀
-# def _post_api_simulate(arguments: Dict[str, Any]) -> Dict[str, Any]:
-#     """
-#     MCP 서버 REST 엔드포인트 호출:
-#       POST {MCP_BASE_URL}/api/simulate
-#       Body: {"arguments": {...}}
-#       Resp: SimulationResult(dict) 또는 {"ok":True,"result":{...}}
-#     """
-#     url = f"{MCP_BASE_URL}/api/simulate"
-#     payload = {"arguments": arguments}
-#     with httpx.Client(timeout=120.0) as client:
-#         try:
-#             r = client.post(url, json=payload)
-#             r.raise_for_status()
-#         except httpx.HTTPStatusError as he:
-#             return {"ok": False, "error": "http_error", "status": he.response.status_code, "text": he.response.text}
-#         except Exception as e:
-#             return {"ok": False, "error": "http_exception", "text": str(e)}
-
-#     try:
-#         data = r.json()
-#     except Exception:
-#         return {"ok": False, "error": "invalid_json", "text": r.text}
-
-#     # 서버가 {"ok":..., "result": {...}} 또는 곧바로 {...}를 줄 수 있음 → 정규화
-#     if isinstance(data, dict) and "ok" in data:
-#         return data
-#     return {"ok": True, "result": data}
+def parse_conversation_logs(text: str, target_round: int | None = None):
+    logs = []
+    patterns = [
+        r'\[Conversation\]\[case:([^\]]+)\]\[run:(\d+)\]\[turn:(\d+)\]\[(offender|victim)\]\s+(.+?)(?=\n\[Conversation\]|$)',
+        r'\[Conversation\]\[case:([^\]]+)\]\[run:(\d+)\]\[turn:(\d+)\]\[(offender|victim)\]\s*\n\s*(.+?)(?=\n\[Conversation\]|$)',
+    ]
+    for pat in patterns:
+        for case_id, run, turn, role, content in re.findall(pat, text, re.DOTALL|re.MULTILINE):
+            run_no = int(run)
+            if target_round is None or target_round == run_no:
+                logs.append({
+                    "case_id": case_id.strip(),
+                    "run": run_no,
+                    "turn_index": int(turn),
+                    "role": role.strip(),
+                    "content": content.strip(),
+                    "created_kst": datetime.now().isoformat(),
+                })
+        if logs:
+            break
+    return logs
 
 
 # ─────────────────────────────────────────────────────────
@@ -335,10 +329,27 @@ class OnDemandMCPManager:
             }
             
             case_id, total_turns = run_two_bot_simulation(db, sim_request).with_config(cfg) if hasattr(run_two_bot_simulation, "with_config") else run_two_bot_simulation(db, sim_request)
+            
+            # ✅ Agent 프로젝트의 ConversationLog 조회 (별도 DB)
+            from app.db.models import ConversationLog  # ← Agent 프로젝트의 모델
+            
+            conversations = db.query(ConversationLog).filter(
+                ConversationLog.case_id == case_id,
+                ConversationLog.run == (args.get("round_no") or 1)
+            ).order_by(ConversationLog.turn_index).all()
+            
+            # ✅ 포맷팅
+            conversation_logs = []
+            for conv in conversations:
+                conversation_logs.append(
+                    f"[Conversation][case:{case_id}][run:{conv.run}][turn:{conv.turn_index}][{conv.role}] {conv.content}"
+                )
+
             return {
                 "case_id": str(case_id),
                 "total_turns": total_turns,
                 "timestamp": __import__("datetime").datetime.now().isoformat(),
+                "conversation_logs": "\n".join(conversation_logs),  # ✅ 추가
                 "debug_echo": {
                     "offender_id": sim_request.offender_id,
                     "victim_id": sim_request.victim_id,
@@ -369,8 +380,8 @@ class OnDemandMCPManager:
         logger.info("MCP 서버 종료됨")
 
 
-def make_mcp_tools(mcp_manager: Optional[OnDemandMCPManager] = None):
-    mgr = mcp_manager or OnDemandMCPManager()
+def make_mcp_tools(mcp_controller=None):
+    mgr = OnDemandMCPManager()
 
     @tool(
         "mcp.simulator_run",
@@ -425,12 +436,16 @@ def make_mcp_tools(mcp_manager: Optional[OnDemandMCPManager] = None):
 
         run_coro_safely(mgr.start_mcp_server_if_needed())
 
-        async def _call_ws() -> Dict[str, Any]:
+        async def _call_ws(mcp_controller: MCPController | None) -> Dict[str, Any]:
             try:
-                async with websockets.connect(mgr.url, open_timeout=15, ping_interval=30, ping_timeout=120, close_timeout=10, max_queue=None) as websocket:
+                async with websockets.connect(
+                    mgr.url, open_timeout=15, ping_interval=30, ping_timeout=120, close_timeout=10, max_queue=None
+                ) as websocket:
+                    # 1) init
                     await websocket.send(json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}))
                     await websocket.recv()
 
+                    # 2) call
                     arguments = {
                         "offender_id": model.offender_id,
                         "victim_id": model.victim_id,
@@ -447,15 +462,69 @@ def make_mcp_tools(mcp_manager: Optional[OnDemandMCPManager] = None):
                         arguments["round_no"] = model.round_no
 
                     logger.info(f"[MCP/ws] simulate args={arguments}")
-
                     await websocket.send(json.dumps({
                         "jsonrpc":"2.0","id":2,"method":"tools/call",
                         "params":{"name":"simulator.run","arguments": arguments}
                     }))
-                    resp = await websocket.recv()
-                    data = json.loads(resp)
-                    content = (data.get("result") or {}).get("content", {}) or {}
 
+                    final_result: Dict[str, Any] | None = None
+                    collected_text_chunks: list[str] = []   # 폴백용
+
+                    # 3) 메시지 수신 루프
+                    while True:
+                        raw = await websocket.recv()
+                        data = json.loads(raw)
+                        # (a) MCP가 이벤트(턴)를 푸시하는 케이스
+                        if "method" in data and data["method"] in ("tools/event", "notification", "simulator/turn"):
+                            params = data.get("params") or {}
+                            # 여기는 MCP가 내보내는 실제 필드명에 맞게 매핑해줘야 함
+                            turn = params.get("turn")
+                            if turn and mcp_controller:
+                                try:
+                                    await mcp_controller.emit_turn(
+                                        case_id = turn.get("case_id") or arguments.get("case_id_override"),
+                                        round_no = int(turn.get("round") or arguments.get("round_no") or 1),
+                                        turn_index = int(turn.get("turn_index") or 0),
+                                        role = (turn.get("role") or "").lower(),
+                                        content = turn.get("content") or "",
+                                        created_kst = datetime.now().isoformat(),
+                                    )
+                                    logger.info("[MCP/ws] EMIT TURN run=%s turn=%s role=%s", turn.get("round"), turn.get("turn_index"), turn.get("role"))
+                                except Exception as e:
+                                    logger.warning(f"[MCP/ws] emit_turn failed: {e}")
+                            # 혹시 텍스트 로그가 같이 오면 폴백을 위해 모아둠
+                            if "text" in params:
+                                collected_text_chunks.append(params["text"])
+
+                        # (b) 최종 결과 수신
+                        elif data.get("id") == 2 and "result" in data:
+                            res = data["result"]
+                            content = res.get("content") or {}
+                            final_result = content if isinstance(content, dict) else {"content": content}
+                            break
+
+                        # (c) 기타: 디버그/로그
+                        else:
+                            if isinstance(data, dict):
+                                txt = data.get("result", {}).get("text") or data.get("params", {}).get("text")
+                                if txt:
+                                    collected_text_chunks.append(txt)
+
+                    # 4) 폴백: 스트림 이벤트를 못 받았으면 최종 텍스트를 턴별 파싱하여 emit
+                    if mcp_controller and collected_text_chunks:
+                        blob = "\n".join(collected_text_chunks)
+                        for log in parse_conversation_logs(blob, target_round=arguments.get("round_no")):
+                            await mcp_controller.emit_turn(
+                                case_id = log.get("case_id") or arguments.get("case_id_override"),
+                                round_no = log["run"],
+                                turn_index = log["turn_index"],
+                                role = log["role"],
+                                content = log["content"],
+                                created_kst = log["created_kst"],
+                            )
+
+                    # 5) 반환값 정리
+                    content = final_result or {}
                     if isinstance(content, dict) and "case_id" in content:
                         content.update({
                             "ok": True,
@@ -463,16 +532,16 @@ def make_mcp_tools(mcp_manager: Optional[OnDemandMCPManager] = None):
                             "victim_id": model.victim_id,
                             "max_turns": model.max_turns,
                             "debug_arguments": arguments,
-                            "debug_result_echo": content.get("debug_echo"),
                         })
                     else:
                         content = {"ok": False, "error": "simulator.run 응답에 case_id 없음"}
                     return content
+
             except Exception as e:
                 logger.error(f"[MCP/ws] 통신 실패: {e}")
                 return {"ok": False, "error": str(e)}
 
-        return run_coro_safely(_call_ws())
+        return run_coro_safely(_call_ws(mcp_controller))
 
     @tool(
         "mcp.latest_case",
@@ -520,139 +589,3 @@ def make_mcp_tools(mcp_manager: Optional[OnDemandMCPManager] = None):
             db.close()
 
     return [simulator_run, latest_case], mgr
-# # ───────── LangChain Tool ─────────
-# def make_mcp_tools():
-#     @tool(
-#         "mcp.simulator_run",
-#         description="MCP 서버의 POST /api/simulate 를 호출해 두-봇 시뮬레이션을 실행합니다."
-#     )
-#     def simulator_run(data: Any) -> Dict[str, Any]:
-#         # ---------- 1) 입력 언랩 + 통짜 프롬프트 자동 구성 ----------
-#         payload = _unwrap(data)
-
-
-#         # case_id 별칭 지원
-#         if "case_id" in payload and "case_id_override" not in payload:
-#             payload["case_id_override"] = payload["case_id"]
-
-#         # compose_prompts 결과 자동 합치기(있을 때만)
-#         ap = payload.get("attacker_prompt")
-#         vp = payload.get("victim_prompt")
-#         if ap and vp and "combined_prompt" not in payload:
-#             payload["combined_prompt"] = f"[ATTACKER]\n{ap}\n[/ATTACKER]\n[VICTIM]\n{vp}\n[/VICTIM]"
-
-#         # 라운드1 가드: case_id 없이 guidance가 오면 무시
-#         round_no = payload.get("round_no")
-#         case_id = payload.get("case_id_override")
-#         if payload.get("guidance") and not case_id and (round_no is None or int(round_no) <= 1):
-#             logger.info("[mcp.simulator_run] guidance before first run → ignored")
-#             payload.pop("guidance", None)
-
-#         # ---------- 2) 1회만 검증 ----------
-#         try:
-#             model = MCPRunInput.model_validate(payload)
-#         except ValidationError as ve:
-#             return {
-#                 "ok": False,
-#                 "error": "Invalid Action Input for mcp.simulator_run",
-#                 "pydantic_errors": json.loads(ve.json()),
-#             }
-
-#         # ---------- 3) 모델 키 정규화 (attacker_model/victim_model → models.attacker/victim) ----------
-#         eff_models: Dict[str, str] = {}
-#         if isinstance(model.models, dict):
-#             eff_models.update({k: v for k, v in model.models.items() if isinstance(v, str) and v})
-#         if model.attacker_model:
-#             eff_models["attacker"] = model.attacker_model
-#         if model.victim_model:
-#             eff_models["victim"] = model.victim_model
-#         if eff_models:
-#             logger.info(f"[MCP] using explicit models: {eff_models}")
-
-#         # ---------- 4) 서버 스키마에 맞게 arguments 구성 ----------
-#         args: Dict[str, Any] = {
-#             "offender_id": model.offender_id,
-#             "victim_id": model.victim_id,
-#             "scenario": model.scenario,
-#             "victim_profile": model.victim_profile,
-#             "templates": {"attacker": model.templates.attacker, "victim": model.templates.victim},
-#             "max_turns": model.max_turns,
-#         }
-#         if model.guidance:
-#             # 서버가 guidance 키를 'kind'로 요구한다면 아래 한 줄만 바꾸면 됨:
-#             # args["guidance"] = {"kind": model.guidance.type, "text": model.guidance.text}
-#             args["guidance"] = {"type": model.guidance.type, "text": model.guidance.text}
-#         if model.case_id_override:
-#             args["case_id_override"] = model.case_id_override
-#         if model.round_no:
-#             args["round_no"] = model.round_no
-#         if model.combined_prompt:
-#             args["combined_prompt"] = model.combined_prompt
-#         # ★ 개별 프롬프트도 같이 전달(서버가 최우선 사용)
-#         if ap and vp:
-#             args["attacker_prompt"] = ap
-#             args["victim_prompt"] = vp
-#         # 모델 전달(선택)
-#         if eff_models:
-#             args["models"] = eff_models
-
-#         logger.info(f"[MCP] POST /api/simulate keys={list(args.keys())} base={MCP_BASE_URL}")
-
-#         # ---------- 5) 호출 ----------
-#         res = _post_api_simulate(args)
-
-#         # 서버가 실패 형식으로 주는 경우 그대로 반환
-#         if isinstance(res, dict) and res.get("ok") is False:
-#             return res
-
-#         # ---------- 6) 응답 평탄화(핵심) ----------
-#         # 서버 응답은 대개 {"result": {...}} 또는 {"raw": {"result": {...}}} 형태일 수 있다.
-#         result = None
-#         if isinstance(res, dict):
-#             if isinstance(res.get("result"), dict):
-#                 result = res["result"]
-#             elif isinstance(res.get("raw"), dict) and isinstance(res["raw"].get("result"), dict):
-#                 result = res["raw"]["result"]
-
-#         if not isinstance(result, dict):
-#             return {"ok": False, "error": "bad_simulator_payload", "raw": res}
-        
-#         for _ in range(3):
-#             if isinstance(result.get("result"), dict):
-#                 result = result["result"]
-#                 continue
-#             raw = result.get("raw")
-#             if isinstance(raw, dict) and isinstance(raw.get("result"), dict):
-#                 result = raw["result"]
-#                 continue
-#             break
-
-#         # 여러 경로에서 conversation_id를 튼튼하게 추출
-#         cid = (
-#             result.get("conversation_id")
-#             or result.get("case_id")
-#             or (result.get("meta") or {}).get("conversation_id")
-#         )
-
-#         if not cid:
-#             # 과거 코드에서는 이 지점에서 ok: False를 반환했기 때문에 항상 실패처럼 보였을 수 있음
-#             return {"ok": False, "error": "missing_conversation_id", "raw": result}
-
-#         turns = result.get("turns") or []
-#         stats = result.get("stats") or {}
-#         ended_by = result.get("ended_by")
-#         meta = result.get("meta") or {}
-
-#         # ---------- 7) 표준화된 성공 응답 ----------
-#         return {
-#             "ok": True,
-#             "case_id": cid,
-#             "turns": turns,
-#             "stats": stats,
-#             "ended_by": ended_by,
-#             "meta": meta,
-#             "log": result,        # ★ admin 판단에 그대로 넘길 전체 로그
-#             "total_turns": stats.get("turns"),
-#         }
-
-#     return [simulator_run]

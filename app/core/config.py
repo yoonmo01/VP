@@ -74,7 +74,7 @@ class Settings(BaseSettings):
         if self.DATABASE_URL:  # ← .env에 있으면 그걸 사용
             return self.DATABASE_URL
         return (
-            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"postgresql+psycopg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}")
 
     @property

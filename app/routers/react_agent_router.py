@@ -4,13 +4,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict
 from uuid import UUID, uuid4
+import json
+import asyncio
+
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.logging import get_logger
-from app.services.agent.orchestrator_react import run_orchestrated
+from app.services.agent.orchestrator_react import run_orchestrated_stream
 
 # ✅ 새 스키마 사용
 from app.schemas.simulation_request import SimulationStartRequest
@@ -30,6 +34,46 @@ class SimulationResponse(BaseModel):
     timestamp: str
     meta: Dict[str, Any]
 
+# ✅ 새로 추가: SSE 스트리밍 엔드포인트
+@router.post(
+    "/simulation/stream",
+    summary="SSE 스트리밍 시뮬레이션",
+)
+async def stream_simulation(req: SimulationStartRequest, db: Session = Depends(get_db)):
+    """
+    Server-Sent Events로 라운드별 실시간 스트리밍
+    """
+    async def event_generator():
+        try:
+            # case_id 생성
+            from uuid import uuid4
+            
+            # 페이로드 준비
+            payload = req.model_dump(mode="python")
+            payload["case_id"] = req.case_id
+            payload["use_tavily"] = bool(req.use_tavily)
+            
+            # 오케스트레이터 스트리밍 실행
+            async for event in run_orchestrated_stream(db, payload):
+                yield f"data: {json.dumps(event)}\n\n"
+                await asyncio.sleep(0.01)  # 버퍼링 방지
+            
+            # 완료 이벤트
+            yield f"data: {json.dumps({'type': 'complete', 'case_id': case_id})}\n\n"
+            
+        except Exception as e:
+            logger.exception("SSE 스트리밍 실패")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # nginx 버퍼링 비활성화
+        }
+    )
 
 # ---------- Route (오케스트레이터 진입점 하나) ----------
 @router.post(
@@ -87,3 +131,4 @@ def start_simulation(req: SimulationStartRequest, db: Session = Depends(get_db))
     except Exception as e:
         logger.exception("React Agent 시뮬레이션 실행 실패")
         raise HTTPException(status_code=500, detail=f"시뮬레이션 실행 실패: {str(e)}")
+

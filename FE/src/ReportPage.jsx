@@ -505,6 +505,109 @@ const ReportPage = ({
                 </div>
               </div>
 
+              {/* ✅ 새로 추가: 사전 판단 (Preview) */}
+              {sessionResult?.preview && (
+                <div
+                  className="rounded-2xl p-8"
+                  style={{
+                    backgroundColor: THEME.panel,
+                    border: `1px solid ${THEME.border}`,
+                  }}
+                >
+                  <h2
+                    className="text-2xl font-semibold mb-5 flex items-center"
+                    style={{ color: THEME.text }}
+                  >
+                    <Shield className="mr-3" size={26} />
+                    1차 분석 결과 (에이전트 사전 판단)
+                  </h2>
+
+                  <div className="space-y-4">
+                    {/* 판정 */}
+                    <div
+                      className="p-4 rounded"
+                      style={{
+                        backgroundColor: THEME.bg,
+                        border: `1px solid ${THEME.border}`,
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="font-semibold" style={{ color: THEME.text }}>
+                          피싱 여부
+                        </h4>
+                        <Badge
+                          tone={sessionResult.preview.phishing ? "danger" : "success"}
+                          COLORS={THEME}
+                        >
+                          {sessionResult.preview.phishing ? "공격자 우세" : "피해자 우세"}
+                        </Badge>
+                      </div>
+                      <p className="text-sm" style={{ color: THEME.sub }}>
+                        결과: {sessionResult.preview.outcome || "-"}
+                      </p>
+                    </div>
+
+                    {/* 판단 근거 */}
+                    {sessionResult.preview.reasons &&
+                      sessionResult.preview.reasons.length > 0 && (
+                        <div
+                          className="p-4 rounded"
+                          style={{
+                            backgroundColor: THEME.bg,
+                            border: `1px solid ${THEME.border}`,
+                          }}
+                        >
+                          <h4 className="font-semibold mb-2" style={{ color: THEME.text }}>
+                            판단 근거
+                          </h4>
+                          <ul className="list-disc pl-6 space-y-1 text-sm" style={{ color: THEME.sub }}>
+                            {sessionResult.preview.reasons.map((reason, i) => (
+                              <li key={i}>{reason}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                    {/* 적용된 지침 */}
+                    {sessionResult.preview.guidance && (
+                      <div
+                        className="p-4 rounded"
+                        style={{
+                          backgroundColor: THEME.bg,
+                          border: `1px solid ${THEME.border}`,
+                        }}
+                      >
+                        <h4 className="font-semibold mb-2" style={{ color: THEME.text }}>
+                          적용 지침
+                        </h4>
+                        <div className="space-y-2 text-sm" style={{ color: THEME.sub }}>
+                          {sessionResult.preview.guidance.title && (
+                            <div>
+                              <span className="font-medium">제목:</span>{" "}
+                              {sessionResult.preview.guidance.title}
+                            </div>
+                          )}
+                          {sessionResult.preview.guidance.type && (
+                            <div>
+                              <span className="font-medium">유형:</span>{" "}
+                              {sessionResult.preview.guidance.type === "P"
+                                ? "예방적 지침"
+                                : "공격적 지침"}
+                            </div>
+                          )}
+                          {sessionResult.preview.guidance.category && (
+                            <div>
+                              <span className="font-medium">카테고리:</span>{" "}
+                              {sessionResult.preview.guidance.category}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* 개인화 예방법 */}
               <div
                 className="rounded-2xl p-8"
@@ -515,10 +618,11 @@ const ReportPage = ({
                     <Shield className="mr-3" size={26} />
                     개인화 예방법
                   </h2>
-                  {(personalized?.content?.analysis?.risk_level || personalized?.content?.risk_level) && (
+                  {(personalized?.content?.analysis?.risk_level || personalized?.analysis?.risk_level || personalized?.content?.risk_level) && (
                     <RiskBadge
                       level={
                         personalized?.content?.analysis?.risk_level ??
+                        personalized?.analysis?.risk_level ??
                         personalized?.content?.risk_level
                       }
                     />
@@ -548,6 +652,33 @@ const ReportPage = ({
                       </p>
                     </div>
 
+                    {/* ✅ 추가: 분석 결과 */}
+                    {personalized?.content?.analysis && (
+                      <div className="p-4 rounded mb-6" style={{ color: THEME.text }}>
+                        <h3 className="font-semibold mb-3" style={{ color: THEME.text }}>
+                          분석 결과
+                        </h3>
+                        <div className="space-y-2 text-sm" style={{ color: THEME.sub }}>
+                          <div>
+                            <span className="font-medium">결과:</span>{" "}
+                            {personalized.content.analysis.outcome === "fail"
+                              ? "피싱 차단 성공"
+                              : "피싱 성공"}
+                          </div>
+                          {personalized.content.analysis.reasons && (
+                            <div>
+                              <span className="font-medium">이유:</span>
+                              <ul className="list-disc pl-6 mt-1 space-y-1">
+                                {personalized.content.analysis.reasons.map((r, i) => (
+                                  <li key={i}>{r}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="mb-6">
                       <h3 className="font-semibold mb-3" style={{ color: THEME.text }}>
                         실천 단계 (steps)
@@ -555,7 +686,7 @@ const ReportPage = ({
                       {Array.isArray(personalized?.content?.steps) && personalized.content.steps.length > 0 ? (
                         <ul className="list-disc pl-6 space-y-1 text-sm" style={{ color: THEME.sub }}>
                           {personalized.content.steps.map((s, i) => (
-                            <li key={i}>{s}</li>
+                            <li key={i} className="leading-relaxed">{s}</li>
                           ))}
                         </ul>
                       ) : (
@@ -581,6 +712,40 @@ const ReportPage = ({
                         </div>
                       )}
                     </div>
+
+                    {/* ✅ 추가: Why 섹션 (신호 분석) */}
+                    {personalized?.content?.why && (
+                      <div className="p-4 rounded mb-6" style={{ color: THEME.text }}>
+                        <h3 className="font-semibold mb-3" style={{ color: THEME.text }}>
+                          판단 근거 (신호 분석)
+                        </h3>
+                        <div className="space-y-3 text-sm" style={{ color: THEME.sub }}>
+                          <div>
+                            <span className="font-medium">신뢰도:</span>{" "}
+                            {(personalized.content.why.confidence * 100).toFixed(0)}%
+                          </div>
+                          {personalized.content.why.notes && (
+                            <div>
+                              <span className="font-medium">노트:</span>{" "}
+                              {personalized.content.why.notes}
+                            </div>
+                          )}
+                          {personalized.content.why.signals && 
+                          personalized.content.why.signals.length > 0 && (
+                            <div>
+                              <span className="font-medium">감지된 신호:</span>
+                              <ul className="list-disc pl-6 mt-1 space-y-1">
+                                {personalized.content.why.signals.slice(0, 5).map((sig, i) => (
+                                  <li key={i}>
+                                    Turn {sig.turn}: {sig.match} ({sig.kind})
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     <div>
                       <h3 className="font-semibold mb-3" style={{ color: THEME.text }}>
@@ -734,6 +899,7 @@ const ReportPage = ({
               세션 결과가 없습니다. 시뮬레이션을 먼저 실행해주세요.
             </p>
           </div>
+          
         )}
       </div>
     </div>

@@ -52,13 +52,13 @@ class AdminCase(Base):
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
     # ✅ 추가(최근 라운드 요약)
-    last_run_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    last_risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    last_risk_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    last_risk_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_vulnerabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # list -> JSONB
-    last_recommendation: Mapped[str | None] = mapped_column(String(20), nullable=True)  # continue/stop
-    last_recommendation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # last_run_no: Mapped[int | None] = mapped_column(Integer, nullable=True,deferred=True)
+    # last_risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True,deferred=True)
+    # last_risk_level: Mapped[str | None] = mapped_column(String(20), nullable=True,deferred=True)
+    # last_risk_rationale: Mapped[str | None] = mapped_column(Text, nullable=True,deferred=True)
+    # last_vulnerabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True,deferred=True)  # list -> JSONB
+    # last_recommendation: Mapped[str | None] = mapped_column(String(20), nullable=True,deferred=True)  # continue/stop
+    # last_recommendation_reason: Mapped[str | None] = mapped_column(Text, nullable=True,deferred=True)
 
 
 
@@ -199,3 +199,15 @@ class PersonalizedPrevention(Base):
 
     __table_args__ = (Index("ix_pp_case_run_victim", "case_id", "run",
                             "victim_id"), )
+    
+# ✅ 메타데이터 강제 새로고침
+def refresh_schema():
+    from app.db.session import engine
+    Base.metadata.clear()
+    Base.metadata.create_all(bind=engine, checkfirst=True)
+
+# 앱 시작 시 한 번 실행
+try:
+    refresh_schema()
+except Exception as e:
+    print(f"스키마 새로고침 실패: {e}")
