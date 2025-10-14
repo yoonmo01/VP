@@ -279,13 +279,9 @@ class SimulationSession:
             self.started_at = datetime.now()
     
     @classmethod
-    def create(cls, offender_id: int, victim_id: int) -> "SimulationSession":
+    def create(cls, offender_id: int, victim_id: int, case_id: Optional[str] = None) -> "SimulationSession":
         """새 세션 생성"""
-        return cls(
-            case_id=str(uuid.uuid4()),
-            offender_id=offender_id,
-            victim_id=victim_id
-        )
+        return cls(case_id=(case_id or str(uuid.uuid4())), offender_id=offender_id, victim_id=victim_id)
     
     def next_round(self) -> int:
         """라운드 진행"""
@@ -618,14 +614,12 @@ def build_agent_and_tools(db: Session,
     return ex, mcp_manager, mcp_controller
 
 async def run_orchestrated_stream(db: Session, payload: Dict[str, Any]):
-    """SSE 스트리밍 with 안전한 case_id 관리"""
+    """SSE 스트리밍 with 안전한 case_id 관리 (턴 단위 실시간 + 라운드 단위 백필)"""
     from starlette.concurrency import run_in_threadpool
-    
-    req = SimulationStartRequest(**payload)
-    mcp_manager = None
-    mcp_controller = MCPController(max_rounds=5)
-    sent_turns_per_round: Dict[int, set] = {}
 
+    req = SimulationStartRequest(**payload)
+
+    # ── 동일 offender/victim 중복 실행 방지 ──
     key = _make_chain_key(int(req.offender_id or 0), int(req.victim_id or 0))
     lock = _active_chains.get(key)
     if lock is None:
@@ -633,367 +627,355 @@ async def run_orchestrated_stream(db: Session, payload: Dict[str, Any]):
         _active_chains[key] = lock
 
     if lock.locked():
-        # 이미 동일 offender/victim으로 진행 중인 체인이 있다 → 즉시 거부
         yield {"type": "error", "message": "이미 진행 중인 시뮬레이션이 있습니다. 완료 후 다시 시도하세요."}
         return
-    
-    # async with lock:
 
-    # ✅ 세션 생성 (case_id 사전 확정)
-    session = SimulationSession.create(
-        offender_id=int(req.offender_id or 0),
-        victim_id=int(req.victim_id or 0)
-    )
-    
-    logger.info(
-        f"[SSE] 새 세션 생성: case_id={session.case_id}, "
-        f"offender={session.offender_id}, victim={session.victim_id}"
-    )
-    
-    # ✅ 즉시 클라이언트에 case_id 전송
-    yield {
-        "type": "case_created",
-        "case_id": session.case_id,
-        "offender_id": session.offender_id,
-        "victim_id": session.victim_id,
-        "timestamp": session.started_at.isoformat()
-    }
-    
-    try:
-        log_capture = RealtimeLogCapture()
-        stopping_callback = RoundLimitStoppingCallback(max_rounds=5)
-        
-        ex, mcp_manager, mcp_controller = build_agent_and_tools(
-            db, 
-            use_tavily=req.use_tavily,
-            mcp_controller=mcp_controller
+    async with lock:
+        mcp_manager = None
+        mcp_controller = MCPController(max_rounds=5)
+
+        # ✅ 세션 생성(프론트가 준 case_id가 있으면 사용)
+        session = SimulationSession.create(
+            offender_id=int(req.offender_id or 0),
+            victim_id=int(req.victim_id or 0),
+            case_id=payload.get("case_id")
         )
-        # turn_q: asyncio.Queue = mcp_controller.make_sink_queue()
-        # await mcp_controller.register_sink(turn_q)
-        
-        used_tools: List[str] = []
-        guidance_history: List[Dict[str, Any]] = []
-        previous_judgments = []
-        
-        # 프롬프트 패키지 빌드
-        pkg = await run_in_threadpool(
-            build_prompt_package_from_payload,
-            db, req,
-            tavily_result=None,
-            is_first_run=True,
-            skip_catalog_write=True,
-            enable_scenario_enhancement=True
+
+        logger.info(
+            "[SSE] 새 세션 생성: case_id=%s, offender=%s, victim=%s",
+            session.case_id, session.offender_id, session.victim_id
         )
-        
-        scenario = pkg["scenario"]
-        victim_profile = pkg["victim_profile"]
-        templates = pkg["templates"]
-        max_rounds = max(2, min(req.round_limit or 3, 5))   
-        
-        if "enhancement_info" in scenario:
-            yield {
-                "type": "enhancement",
-                "data": scenario["enhancement_info"]
-            }
-        
-        guidance_info = None
-        
-        # ✅ 라운드 실행
-        for _ in range(max_rounds):
-            round_no = session.next_round()
-            
-            try:
-                mcp_controller.start_round()
-            except RuntimeError as e:
-                logger.warning(f"[SSE] 라운드 시작 불가: {e}")
-                break
-            
-            log_capture.current_round = round_no
-            
-            yield {
-                "type": "round_start",
-                "round": round_no,
-                "case_id": session.case_id,
-                "message": f"라운드 {round_no} 시작"
-            }
-            
-            # ✅ 시뮬레이션 페이로드 구성
-            sim_payload: Dict[str, Any] = {
-                "offender_id": session.offender_id,
-                "victim_id": session.victim_id,
-                "scenario": scenario,
-                "victim_profile": victim_profile,
-                "templates": templates,
-                "max_turns": req.max_turns,
-                # ✅ 2라운드부터만 case_id_override 포함
-                "round_no": round_no,
-            }
-            
-            # ✅ 1라운드가 아닐 때만 case_id_override 추가
-            if round_no > 1:
-                sim_payload["case_id_override"] = session.case_id
-            
-            # 지침 추가 (2라운드부터)
-            if guidance_info and guidance_info.get("text"):
-                sim_payload["guidance"] = {
-                    "type": "A",
-                    "text": guidance_info["text"]
-                }
-            
-            llm_call = {
-                "input": (
-                    "다음 JSON 블록을 **수정하지 말고 그대로** mcp.simulator_run의 Action Input으로 사용하라.\n"
-                    f"{json.dumps({'data': sim_payload}, ensure_ascii=False)}"
-                )
-            }
 
-            # ▼ 에이전트 호출을 백그라운드 태스크로 시작
-            # agent_task = asyncio.create_task(run_in_threadpool(
-            #     ex.invoke, llm_call, config={"callbacks": [log_capture, stopping_callback]}
-            # ))
+        # ✅ 즉시 프론트에 case_id 공지
+        yield {
+            "type": "case_created",
+            "case_id": session.case_id,
+            "offender_id": session.offender_id,
+            "victim_id": session.victim_id,
+            "timestamp": session.started_at.isoformat()
+        }
 
-            # # ▼ 동시에 Queue를 비워서 즉시 SSE로 턴 푸시
-            # #    agent_task가 끝날 때까지 반복
-            # get_task = asyncio.create_task(turn_q.get())
-            # while True:
-            #     done, pending = await asyncio.wait(
-            #         {agent_task, get_task},
-            #         return_when=asyncio.FIRST_COMPLETED
-            #     )
+        try:
+            # ── 에이전트 & MCP 도구 세팅 ──
+            log_capture = RealtimeLogCapture()
+            stopping_callback = RoundLimitStoppingCallback(max_rounds=5)
 
-            #     if get_task in done:
-            #         ev = get_task.result()  # {"type":"turn", ...}
-            #         # 프론트 규격으로 변환해서 곧바로 내보냄
-            #         yield {
-            #             "type": "new_message",
-            #             "case_id": ev["case_id"] or session.case_id,
-            #             "round": ev["round"],
-            #             "role": ev["role"],
-            #             "turn_index": ev["turn_index"],
-            #             "content": ev["content"],
-            #             "created_kst": ev["created_kst"],
-            #         }
-            #         # 다음 아이템 대기
-            #         get_task = asyncio.create_task(turn_q.get())
-
-            #     if agent_task in done:
-            #         # 시뮬레이터 런 완료 → 루프 탈출
-            #         # 남아있는 get_task는 취소
-            #         if not get_task.done():
-            #             get_task.cancel()
-            #             with contextlib.suppress(asyncio.CancelledError):
-            #                 await get_task
-            #         break
-                
-            # try:
-            #     while True:
-            #         ev = turn_q.get_nowait()
-            #         yield {
-            #             "type": "new_message",
-            #             "case_id": ev.get("case_id") or session.case_id,
-            #             "round": ev["round"],
-            #             "role": ev["role"],
-            #             "turn_index": ev["turn_index"],
-            #             "content": ev["content"],
-            #             "created_kst": ev["created_kst"],
-            #         }
-            # except asyncio.QueueEmpty:
-            #     pass
-            
-            yield {
-                "type": "simulation_progress",
-                "round": round_no,
-                "case_id": session.case_id,
-                "message": f"라운드 {round_no} 대화 생성 중...",
-                "status": "running"
-            }
-            
-            res_run = await run_in_threadpool(
-                ex.invoke, llm_call, config={"callbacks": [log_capture, stopping_callback]}
+            ex, mcp_manager, mcp_controller = build_agent_and_tools(
+                db, use_tavily=req.use_tavily, mcp_controller=mcp_controller
             )
-            used_tools.append("mcp.simulator_run")
-            
-                    
-            # 로그 수집 및 전송
-            round_logs = log_capture.get_round_logs(round_no)
-             # 라운드 1에서 MCP가 실제 case_id를 만든 경우, 파싱된 로그에서 갱신
-            # 🔧 (보강) 콜백 로그가 비면 res_run의 conversation_logs 문자열을 파싱
-            if (not round_logs) and isinstance(res_run, dict) and isinstance(res_run.get("conversation_logs"), str):
-                blob = res_run["conversation_logs"]
-                parsed = parse_conversation_logs(blob, target_round=round_no)
-                if parsed:
-                    round_logs = parsed
-            
-            # 🔧 (라운드1에서 case_id 갱신)
-            if round_no == 1 and round_logs:
-                real_case = next((l.get("case_id") for l in round_logs if l.get("case_id")), None)
-                if real_case and real_case != session.case_id:
-                    logger.warning(f"[SSE] case_id 업데이트: {session.case_id} → {real_case}")
-                    session.case_id = real_case
-                    yield {"type": "case_id_updated", "case_id": session.case_id, "reason": "로그에서 실제 case_id 확인"}
-            
-            # 🔧 (한 번에 전체 로그 전송)
-            if round_logs:
-                # 정렬 보장
-                round_logs = sorted(round_logs, key=lambda x: x.get("turn_index", 0))
-                yield {
-                    "type": "conversation_logs",
-                    "round": round_no,
-                    "logs": round_logs,
-                    "total_turns": len(round_logs),
-                    "case_id": session.case_id,
-                    "status": "completed"
-                }
-                logger.info(f"[SSE] ✅ 라운드 {round_no}: {len(round_logs)}개 로그 전송")
-            else:
-                logger.warning(f"[SSE] ⚠️ 라운드 {round_no}: 로그 없음")
-                yield {"type": "conversation_logs", "round": round_no, "logs": [], "total_turns": 0, "case_id": session.case_id, "status": "no_logs"}
-            
-            yield {"type": "round_complete", "round": round_no, "case_id": session.case_id, "total_turns": len(round_logs)}
 
-            
-            # ── 판정 ──
-            res_judge = await run_in_threadpool(
-                ex.invoke,
-                {
-                    "input": json.dumps({
-                        "data": {
-                            "case_id": session.case_id,
-                            "run_no": round_no
-                        }
-                    }, ensure_ascii=False)
-                },
-                config={"callbacks": [log_capture, stopping_callback]}
+            # 🔌 턴 스트림 큐 등록 (실시간 new_message 용)
+            turn_q: asyncio.Queue = mcp_controller.make_sink_queue()
+            await mcp_controller.register_sink(turn_q)
+
+            used_tools: List[str] = []
+            guidance_history: List[Dict[str, Any]] = []
+            previous_judgments: List[Dict[str, Any]] = []
+
+            # ── 프롬프트 패키지 구성 ──
+            pkg = await run_in_threadpool(
+                build_prompt_package_from_payload,
+                db, req,
+                tavily_result=None,
+                is_first_run=True,
+                skip_catalog_write=True,
+                enable_scenario_enhancement=True,
             )
-            used_tools.append("admin.judge")
-            
-            phishing = _extract_phishing(res_judge)
-            reason = _extract_reason(res_judge)
-            
-            previous_judgments.append({"round": round_no, "phishing": phishing, "reason": reason, "timestamp": datetime.now().isoformat()})
+            scenario = pkg["scenario"]
+            victim_profile = pkg["victim_profile"]
+            templates = pkg["templates"]
 
-            
-            yield {
-                "type": "judgement",
-                "round": round_no,
-                "case_id": session.case_id,
-                "phishing": phishing,
-                "reason": reason,
-            }
-            
-            # ── 지침 생성 (다음 라운드용) ──
-            if round_no < max_rounds:
-                guidance_input = {
-                    "input": f"""admin.generate_guidance를 호출:
-                    - case_id: {session.case_id}
-                    - round_no: {round_no + 1}
-                    - scenario: {json.dumps(scenario, ensure_ascii=False)}
-                    - victim_profile: {json.dumps(victim_profile, ensure_ascii=False)}
-                    - previous_judgments: {json.dumps(previous_judgments, ensure_ascii=False)}"""
-                }
-                
-                res_guidance = await run_in_threadpool(
-                    ex.invoke,
-                    guidance_input,
-                    config={"callbacks": [log_capture, stopping_callback]}
-                )
-                
-                guidance_info = _extract_guidance_info(res_guidance)
-                guidance_history.append({
-                    "round": round_no + 1,
-                    "guidance": guidance_info,
-                    "timestamp": datetime.now().isoformat()
-                })
-                
-                yield {
-                    "type": "guidance_generated",
-                    "round": round_no + 1,
-                    "case_id": session.case_id,
-                    "guidance": guidance_info,
-                }
-            
-            # ── 예방책 저장 ──
-            save_payload = {
-                "case_id": session.case_id,
-                "offender_id": session.offender_id,
-                "victim_id": session.victim_id,
-                "run_no": round_no,
-                "summary": f"Round {round_no} judgement: {'PHISHING' if phishing else 'NOT PHISHING'}. Reason: {reason}",
-                "steps": {
-                    "prevention_steps": [
-                        "낯선 연락의 긴급 요구는 의심한다.",
-                        "공식 채널로 재확인한다(콜백/앱/웹).",
-                        "개인·금융정보를 전화/메신저로 제공하지 않는다.",
-                        "가족·지인 사칭 시 직접 연락으로 확인한다.",
-                        "의심스러우면 즉시 경찰서나 금융감독원에 신고한다."
-                    ]
-                }
-            }
-            
+            max_rounds = max(2, min(req.round_limit or 3, 5))
+
             if "enhancement_info" in scenario:
-                save_payload["steps"]["scenario_enhancement"] = scenario["enhancement_info"]
-            
-            if guidance_info and guidance_info.get("text"):
-                save_payload["steps"]["guidance_applied"] = guidance_info
-            
+                yield {"type": "enhancement", "data": scenario["enhancement_info"]}
+
+            guidance_info = None
+
+            # ============ 라운드 루프 ============
+            for _ in range(max_rounds):
+                round_no = session.next_round()
+
+                try:
+                    mcp_controller.start_round()
+                except RuntimeError as e:
+                    logger.warning("[SSE] 라운드 시작 불가: %s", e)
+                    break
+
+                log_capture.current_round = round_no
+
+                yield {
+                    "type": "round_start",
+                    "round": round_no,
+                    "case_id": session.case_id,
+                    "message": f"라운드 {round_no} 시작"
+                }
+
+                # 호출 페이로드
+                sim_payload: Dict[str, Any] = {
+                    "offender_id": session.offender_id,
+                    "victim_id": session.victim_id,
+                    "scenario": scenario,
+                    "victim_profile": victim_profile,
+                    "templates": templates,
+                    "max_turns": req.max_turns,
+                    "round_no": round_no,
+                }
+                if round_no > 1:
+                    sim_payload["case_id_override"] = session.case_id
+                if guidance_info and guidance_info.get("text"):
+                    sim_payload["guidance"] = {"type": "A", "text": guidance_info["text"]}
+
+                llm_call = {
+                    "input": (
+                        "다음 JSON 블록을 **수정하지 말고 그대로** mcp.simulator_run의 Action Input으로 사용하라.\n"
+                        f"{json.dumps({'data': sim_payload}, ensure_ascii=False)}"
+                    )
+                }
+
+                # 진행상태 공지
+                yield {
+                    "type": "simulation_progress",
+                    "round": round_no,
+                    "case_id": session.case_id,
+                    "message": f"라운드 {round_no} 대화 생성 중...",
+                    "status": "running",
+                }
+
+                # ── 에이전트 호출을 백그라운드 태스크로 시작 ──
+                agent_task = asyncio.create_task(
+                    run_in_threadpool(
+                        ex.invoke, llm_call, config={"callbacks": [log_capture, stopping_callback]}
+                    )
+                )
+                used_tools.append("mcp.simulator_run")
+
+                # ── 동시에 큐에서 턴 이벤트를 즉시 퍼블리시 ──
+                get_task = asyncio.create_task(turn_q.get())
+                while True:
+                    done, _ = await asyncio.wait(
+                        {agent_task, get_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    if get_task in done:
+                        ev = get_task.result()  # {"case_id","round","turn_index","role","content","created_kst"}
+                        # ⚠️ 여기서는 오직 단일 턴만 new_message로 보낸다
+                        yield {
+                            "type": "new_message",
+                            "case_id": ev.get("case_id") or session.case_id,
+                            "round": ev["round"],
+                            "role": ev["role"],
+                            "turn_index": ev["turn_index"],
+                            "content": ev["content"],
+                            "created_kst": ev["created_kst"],
+                        }
+                        get_task = asyncio.create_task(turn_q.get())
+
+                    if agent_task in done:
+                        # 남은 get_task 정리
+                        if not get_task.done():
+                            get_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await get_task
+                        break
+
+                # ── 라운드 종료 후: 로그 백필(배열) ──
+                round_logs = log_capture.get_round_logs(round_no)
+
+                # 콜백이 비었으면 MCP 반환의 conversation_logs(문자열) 파싱
+                res_run = agent_task.result() if not agent_task.cancelled() else None
+                if (not round_logs) and isinstance(res_run, dict) and isinstance(res_run.get("conversation_logs"), str):
+                    parsed = parse_conversation_logs(res_run["conversation_logs"], target_round=round_no)
+                    if parsed:
+                        round_logs = parsed
+
+                # 라운드1에서 MCP가 생성한 실제 case_id로 갱신
+                if round_no == 1 and round_logs:
+                    real_case = next((l.get("case_id") for l in round_logs if l.get("case_id")), None)
+                    if real_case and real_case != session.case_id:
+                        logger.warning("[SSE] case_id 업데이트: %s → %s", session.case_id, real_case)
+                        session.case_id = real_case
+                        yield {"type": "case_id_updated", "case_id": session.case_id, "reason": "로그에서 실제 case_id 확인"}
+
+                if round_logs:
+                    round_logs = sorted(round_logs, key=lambda x: x.get("turn_index", 0))
+                    # ✅ 통짜 문자열을 new_message로 보내지 않고, 배열로만 보낸다
+                    yield {
+                        "type": "conversation_logs",
+                        "round": round_no,
+                        "logs": round_logs,
+                        "total_turns": len(round_logs),
+                        "case_id": session.case_id,
+                        "status": "completed",
+                    }
+                    logger.info("[SSE] ✅ 라운드 %s: %s개 로그 전송", round_no, len(round_logs))
+                else:
+                    logger.warning("[SSE] ⚠️ 라운드 %s: 로그 없음", round_no)
+                    yield {
+                        "type": "conversation_logs",
+                        "round": round_no,
+                        "logs": [],
+                        "total_turns": 0,
+                        "case_id": session.case_id,
+                        "status": "no_logs",
+                    }
+
+                yield {
+                    "type": "round_complete",
+                    "round": round_no,
+                    "case_id": session.case_id,
+                    "total_turns": len(round_logs),
+                }
+
+                # ── 판정 ──
+                res_judge = await run_in_threadpool(
+                    ex.invoke,
+                    {"input": json.dumps({"data": {"case_id": session.case_id, "run_no": round_no}}, ensure_ascii=False)},
+                    config={"callbacks": [log_capture, stopping_callback]},
+                )
+                used_tools.append("admin.judge")
+
+                phishing = _extract_phishing(res_judge)
+                reason = _extract_reason(res_judge)
+
+                previous_judgments.append({
+                    "round": round_no,
+                    "phishing": phishing,
+                    "reason": reason,
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+                yield {
+                    "type": "judgement",
+                    "round": round_no,
+                    "case_id": session.case_id,
+                    "phishing": phishing,
+                    "reason": reason,
+                }
+
+                # ── 다음 라운드 지침 생성 ──
+                if round_no < max_rounds:
+                    guidance_input = {
+                        "input": f"""admin.generate_guidance를 호출:
+                        - case_id: {session.case_id}
+                        - round_no: {round_no + 1}
+                        - scenario: {json.dumps(scenario, ensure_ascii=False)}
+                        - victim_profile: {json.dumps(victim_profile, ensure_ascii=False)}
+                        - previous_judgments: {json.dumps(previous_judgments, ensure_ascii=False)}"""
+                    }
+                    res_guidance = await run_in_threadpool(
+                        ex.invoke, guidance_input, config={"callbacks": [log_capture, stopping_callback]}
+                    )
+                    guidance_info = _extract_guidance_info(res_guidance)
+                    guidance_history.append({
+                        "round": round_no + 1,
+                        "guidance": guidance_info,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    yield {
+                        "type": "guidance_generated",
+                        "round": round_no + 1,
+                        "case_id": session.case_id,
+                        "guidance": guidance_info,
+                    }
+
+                # ── 예방책 저장 ──
+                save_payload = {
+                    "case_id": session.case_id,
+                    "offender_id": session.offender_id,
+                    "victim_id": session.victim_id,
+                    "run_no": round_no,
+                    "summary": f"Round {round_no} judgement: {'PHISHING' if phishing else 'NOT PHISHING'}. Reason: {reason}",
+                    "steps": {
+                        "prevention_steps": [
+                            "낯선 연락의 긴급 요구는 의심한다.",
+                            "공식 채널로 재확인한다(콜백/앱/웹).",
+                            "개인·금융정보를 전화/메신저로 제공하지 않는다.",
+                            "가족·지인 사칭 시 직접 연락으로 확인한다.",
+                            "의심스러우면 즉시 경찰서나 금융감독원에 신고한다.",
+                        ]
+                    }
+                }
+                if "enhancement_info" in scenario:
+                    save_payload["steps"]["scenario_enhancement"] = scenario["enhancement_info"]
+                if guidance_info and guidance_info.get("text"):
+                    save_payload["steps"]["guidance_applied"] = guidance_info
+
+                await run_in_threadpool(
+                    ex.invoke,
+                    {"input": json.dumps({"data": save_payload}, ensure_ascii=False)},
+                    config={"callbacks": [log_capture, stopping_callback]},
+                )
+
+                log_capture.next_round()
+
+                # 종료 조건
+                if not should_continue_rounds({"phishing": phishing}, round_no):
+                    logger.info("[SSE] 종료 조건 충족: round=%s", round_no)
+                    break
+
+            # ── 최종 예방책 생성 ──
+            final_payload = {
+                "case_id": session.case_id,
+                "rounds": session.round_no,
+                "turns": log_capture.all_logs,
+                "judgements": previous_judgments,
+                "guidances": guidance_history,
+                "format": "personalized_prevention",
+            }
             await run_in_threadpool(
                 ex.invoke,
-                {"input": json.dumps({"data": save_payload}, ensure_ascii=False)},
-                config={"callbacks": [log_capture, stopping_callback]}
+                {"input": json.dumps({"data": final_payload}, ensure_ascii=False)},
+                config={"callbacks": [log_capture, stopping_callback]},
             )
-            
-            log_capture.next_round()
-            
-            # 종료 조건
-            if not should_continue_rounds({"phishing": phishing}, round_no):
-                logger.info(f"[SSE] 종료 조건 충족: round={round_no}")
-                break
-        
-        # ✅ 최종 예방책 생성
-        final_payload = {
-            "case_id": session.case_id,
-            "rounds": session.round_no,
-            "turns": log_capture.all_logs,
-            "judgements": previous_judgments,
-            "guidances": guidance_history,
-            "format": "personalized_prevention"
-        }
-        
-        await run_in_threadpool(
-            ex.invoke,
-            {"input": json.dumps({"data": final_payload}, ensure_ascii=False)},
-            config={"callbacks": [log_capture, stopping_callback]}
-        )
-        
-        session.complete()
-        
-        yield {
-            "type": "complete",
-            "case_id": session.case_id,
-            "rounds": session.round_no,
-            "status": session.status,
-            "used_tools": used_tools,
-            "total_logs": len(log_capture.all_logs),
-            "duration": (datetime.now() - session.started_at).total_seconds()
-        }
-        
-        logger.info(f"[SSE] 시뮬레이션 완료: case_id={session.case_id}, rounds={session.round_no}, logs={len(log_capture.all_logs)}")
-    
-    except Exception as e:
-        session.fail(str(e))
-        logger.exception("SSE 스트리밍 실패")
-        yield {
-            "type": "error",
-            "case_id": session.case_id,
-            "message": f"시뮬레이션 오류: {str(e)}"
-        }
-    
-    finally:
-        try:
+
+            session.complete()
+            yield {
+                "type": "complete",
+                "case_id": session.case_id,
+                "rounds": session.round_no,
+                "status": session.status,
+                "used_tools": used_tools,
+                "total_logs": len(log_capture.all_logs),
+                "duration": (datetime.now() - session.started_at).total_seconds(),
+            }
+
+            # 즉시 종료 + 자원 해제
+            try:
+                await mcp_controller.unregister_sink(turn_q)
+            except Exception:
+                pass
             if mcp_controller:
                 mcp_controller.shutdown()
             if mcp_manager and getattr(mcp_manager, "is_running", False):
                 await run_in_threadpool(mcp_manager.stop_mcp_server)
-            logger.info(f"[SSE] 리소스 정리 완료: case_id={session.case_id}")
+
+            logger.info("[SSE] 시뮬레이션 완료: case_id=%s, rounds=%s, logs=%s",
+                        session.case_id, session.round_no, len(log_capture.all_logs))
+            return
+
         except Exception as e:
-            logger.error(f"MCP 서버 종료 실패: {e}")
+            session.fail(str(e))
+            logger.exception("SSE 스트리밍 실패")
+            yield {"type": "error", "case_id": session.case_id, "message": f"시뮬레이션 오류: {str(e)}"}
+
+        finally:
+            # 안전한 정리
+            with contextlib.suppress(Exception):
+                await mcp_controller.unregister_sink(turn_q)
+            with contextlib.suppress(Exception):
+                if mcp_controller:
+                    mcp_controller.shutdown()
+            with contextlib.suppress(Exception):
+                if mcp_manager and getattr(mcp_manager, "is_running", False):
+                    await run_in_threadpool(mcp_manager.stop_mcp_server)
+
+            # 락 맵 정리
+            try:
+                # 현재 lock 객체와 동일할 때만 제거
+                if _active_chains.get(key) is lock:
+                    del _active_chains[key]
+            except Exception:
+                pass
+
+            logger.info("[SSE] 리소스 정리 완료: case_id=%s", session.case_id)
