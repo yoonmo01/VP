@@ -94,25 +94,61 @@ def _unwrap(data: Any) -> Dict[str, Any]:
     return obj
 
 def parse_conversation_logs(text: str, target_round: int | None = None):
+    """
+    MCP 출력에서 대화 로그를 파싱
+    
+    Args:
+        text: MCP 도구 출력 텍스트 (한 줄로 압축된 형식)
+        target_round: 특정 라운드만 필터링 (None이면 전체)
+    
+    Returns:
+        파싱된 로그 리스트
+    """
     logs = []
-    patterns = [
-        r'\[Conversation\]\[case:([^\]]+)\]\[run:(\d+)\]\[turn:(\d+)\]\[(offender|victim)\]\s+(.+?)(?=\n\[Conversation\]|$)',
-        r'\[Conversation\]\[case:([^\]]+)\]\[run:(\d+)\]\[turn:(\d+)\]\[(offender|victim)\]\s*\n\s*(.+?)(?=\n\[Conversation\]|$)',
-    ]
-    for pat in patterns:
-        for case_id, run, turn, role, content in re.findall(pat, text, re.DOTALL|re.MULTILINE):
-            run_no = int(run)
-            if target_round is None or target_round == run_no:
-                logs.append({
-                    "case_id": case_id.strip(),
-                    "run": run_no,
-                    "turn_index": int(turn),
-                    "role": role.strip(),
-                    "content": content.strip(),
-                    "created_kst": datetime.now().isoformat(),
-                })
+    
+    logger.info(f"[Parser] 시작: 텍스트 길이={len(text)}, target_round={target_round}")
+    
+    # ✅ 수정: 한 줄 형식에 맞는 패턴 (탐욕적이지 않게)
+    # [Conversation][case:xxx][run:1][turn:0][offender] 내용 (개행 전까지)
+    pattern = r'\[Conversation\]\[case:([^\]]+)\]\[run:(\d+)\]\[turn:(\d+)\]\[(offender|victim)\]\s+(.+?)(?=\n\[Conversation\]|\Z)'
+    
+    matches = re.findall(pattern, text, re.DOTALL | re.MULTILINE)
+    
+    logger.info(f"[Parser] 패턴 매칭: {len(matches)}개")
+    
+    for match in matches:
+        case_id, run, turn, role, content = match
+        run_no = int(run)
+        
+        # 내용 정리: 앞뒤 공백 제거
+        content_clean = content.strip()
+        
+        logger.debug(f"[Parser] 매칭: run={run_no}, turn={turn}, role={role}, content_len={len(content_clean)}")
+        
+        if target_round is None or run_no == target_round:
+            logs.append({
+                "case_id": case_id.strip(),
+                "run": run_no,
+                "turn_index": int(turn),
+                "role": role.strip(),
+                "content": content_clean,  # ✅ 전체 내용
+                "created_kst": datetime.now().isoformat(),
+            })
+    
+    if not logs:
+        logger.warning(f"[Parser] ⚠️ 로그 파싱 실패")
+        logger.warning(f"[Parser] 텍스트 샘플:\n{text[:500]}")
+    else:
+        # 역할별 카운트
+        offender_cnt = len([l for l in logs if l['role'] == 'offender'])
+        victim_cnt = len([l for l in logs if l['role'] == 'victim'])
+        logger.info(f"[Parser] ✅ 파싱 완료: offender={offender_cnt}, victim={victim_cnt}")
+        
+        # 샘플 출력
         if logs:
-            break
+            sample = logs[0]
+            logger.debug(f"[Parser] 샘플: {sample['content'][:100]}...")
+    
     return logs
 
 

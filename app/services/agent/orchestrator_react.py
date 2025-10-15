@@ -26,6 +26,7 @@ from app.services.agent.graph import should_continue_rounds
 from app.services.agent.guideline_repo_db import GuidelineRepoDB
 from app.services.agent.guidance_generator import make_guidance_generation_tool  # 새로 추가
 from app.core.logging import get_logger
+from app.services.agent.tools_mcp import parse_conversation_logs
 
 # ✅ 올바른 방식 - 클래스와 함수들을 import
 from app.services.agent.mcp_controller import (
@@ -202,57 +203,6 @@ def _log_prompt_snapshot(round_no: int, sim_payload: Dict[str, Any]) -> None:
     logger.info("[PromptSnapshot] %s",
                 json.dumps(_truncate(snapshot), ensure_ascii=False))
 
-def parse_conversation_logs(text: str, target_round: int = None) -> List[Dict]:
-    """
-    MCP 출력에서 대화 로그를 파싱
-    
-    Args:
-        text: MCP 도구 출력 텍스트
-        target_round: 특정 라운드만 필터링 (None이면 전체)
-    
-    Returns:
-        파싱된 로그 리스트
-    """
-    logs = []
-    
-    # 여러 패턴 시도 (MCP 출력 형식 변화 대응)
-    patterns = [
-        # 표준: [Conversation][case:xxx][run:1][turn:0][offender] 내용
-        r'\[Conversation\]\[case:([^\]]+)\]\[run:(\d+)\]\[turn:(\d+)\]\[(offender|victim)\]\s+(.+?)(?=\n\[Conversation\]|$)',
-        
-        # 개행 포함
-        r'\[Conversation\]\[case:([^\]]+)\]\[run:(\d+)\]\[turn:(\d+)\]\[(offender|victim)\]\s*\n\s*(.+?)(?=\n\[Conversation\]|$)',
-        
-        # 공백 관대
-        r'\[\s*Conversation\s*\]\s*\[case:([^\]]+)\]\s*\[run:(\d+)\]\s*\[turn:(\d+)\]\s*\[(offender|victim)\]\s+(.+?)(?=\n\[|$)',
-    ]
-    
-    for pattern in patterns:
-        matches = re.findall(pattern, text, re.DOTALL | re.MULTILINE)
-        
-        for match in matches:
-            case_id, run, turn, role, content = match
-            run_no = int(run)
-            
-            if target_round is None or run_no == target_round:
-                logs.append({
-                    "case_id": case_id.strip(),
-                    "run": run_no,
-                    "turn_index": int(turn),
-                    "role": role.strip(),
-                    "content": content.strip(),
-                    "created_kst": datetime.now().isoformat(),
-                })
-        
-        if logs:  # 성공하면 중단
-            logger.info(f"[Parser] 패턴 {patterns.index(pattern)+1}로 {len(logs)}개 로그 파싱 성공")
-            break
-    
-    if not logs:
-        logger.warning(f"[Parser] 로그 파싱 실패. 텍스트 길이: {len(text)}")
-        logger.debug(f"[Parser] 텍스트 샘플:\n{text[:500]}")
-    
-    return logs
 
 # ─────────────────────────────────────────────────────────
 # LangChain 콜백: Thought/Action/Observation 캡처
@@ -742,7 +692,7 @@ async def run_orchestrated_stream(db: Session, payload: Dict[str, Any]):
                     "status": "running",
                 }
 
-                # ── ✅ 핵심: 에이전트 호출과 턴 스트리밍을 동시에 처리 ──
+                # ── ✅ 에이전트 호출을 백그라운드 태스크로 시작 ──
                 agent_task = asyncio.create_task(
                     run_in_threadpool(
                         ex.invoke, llm_call, config={"callbacks": [log_capture, stopping_callback]}
@@ -750,37 +700,59 @@ async def run_orchestrated_stream(db: Session, payload: Dict[str, Any]):
                 )
                 used_tools.append("mcp.simulator_run")
 
-                # ── ✅ 동시에 큐에서 턴 이벤트를 즉시 퍼블리시 ──
+                # ── ✅ 동시에 큐에서 턴 이벤트를 즉시 퍼블리시 (하이브리드 방식) ──
                 get_task = asyncio.create_task(turn_q.get())
 
-                # JSON 버퍼
-                victim_json_buffer = {}
-                
-                # ✅ 중요: 에이전트 실행 중에 턴 이벤트를 실시간으로 전송
+                # ✅ victim JSON 버퍼 (조각난 JSON 조립용)
+                victim_buffers = {}  # {turn_index: {"content": str, "timestamp": float}}
+                BUFFER_TIMEOUT = 0.5  # 0.5초 내에 완성 안 되면 강제 전송
+
+                def is_complete_json(text: str) -> bool:
+                    """JSON 블록이 완성되었는지 체크"""
+                    text = text.strip()
+                    # ```json ... ``` 형식인지 확인
+                    if text.startswith("```json") or text.startswith("```"):
+                        # 닫는 ``` 가 있으면 완성
+                        return text.count("```") >= 2
+                    # JSON 블록이 아니면 완성된 것으로 간주
+                    return True
+
+                def extract_from_buffer(turn_idx: int) -> str:
+                    """버퍼에서 내용 추출"""
+                    if turn_idx in victim_buffers:
+                        return victim_buffers.pop(turn_idx)["content"]
+                    return ""
+
                 while True:
                     done, _ = await asyncio.wait(
                         {agent_task, get_task}, return_when=asyncio.FIRST_COMPLETED
                     )
 
-                    # 턴 이벤트가 도착하면 즉시 프론트로 전송
+                    # ✅ 턴 이벤트가 도착하면 처리
                     if get_task in done:
                         ev = get_task.result()
-
+                        
                         role = ev.get("role", "").lower()
                         turn_idx = ev.get("turn_index")
                         content = ev.get("content", "")
-
-                        # ✅ victim이고 JSON 블록인 경우 버퍼링
-                        if role == "victim" and (content.strip().startswith("```json") or turn_idx in victim_json_buffer):
-                            # 버퍼에 추가
-                            if turn_idx not in victim_json_buffer:
-                                victim_json_buffer[turn_idx] = ""
-                            victim_json_buffer[turn_idx] += content
+                        
+                        # ✅ victim인 경우 JSON 버퍼링 시도
+                        if role == "victim":
+                            # 기존 버퍼에 추가
+                            if turn_idx in victim_buffers:
+                                victim_buffers[turn_idx]["content"] += content
+                            else:
+                                victim_buffers[turn_idx] = {
+                                    "content": content,
+                                    "timestamp": asyncio.get_event_loop().time()
+                                }
                             
-                            # 완성 체크: ```으로 끝나면 완성
-                            if victim_json_buffer[turn_idx].strip().endswith("```"):
-                                # 완성된 JSON 전송
-                                complete_content = victim_json_buffer.pop(turn_idx)
+                            buffered_content = victim_buffers[turn_idx]["content"]
+                            
+                            # 완성 체크
+                            if is_complete_json(buffered_content):
+                                # ✅ 완성되었으면 전송
+                                complete_content = victim_buffers.pop(turn_idx)["content"]
                                 
                                 yield {
                                     "type": "new_message",
@@ -788,41 +760,59 @@ async def run_orchestrated_stream(db: Session, payload: Dict[str, Any]):
                                     "round": ev["round"],
                                     "role": role,
                                     "turn_index": turn_idx,
-                                    "content": complete_content,  # ✅ 완전한 JSON
+                                    "content": complete_content,
                                     "created_kst": ev["created_kst"],
                                 }
-                            # 아직 미완성이면 다음 조각 대기
+                                logger.debug(f"[SSE] victim 턴 전송 완료: turn={turn_idx}, len={len(complete_content)}")
                             else:
-                                pass  # 계속 버퍼링
-
-                        # ✅ victim이 아니거나 JSON 블록이 아니면 즉시 전송    
+                                # 미완성 - 타임아웃 체크
+                                elapsed = asyncio.get_event_loop().time() - victim_buffers[turn_idx]["timestamp"]
+                                if elapsed > BUFFER_TIMEOUT:
+                                    # 타임아웃 - 강제 전송
+                                    partial_content = victim_buffers.pop(turn_idx)["content"]
+                                    logger.warning(f"[SSE] victim JSON 타임아웃, 강제 전송: turn={turn_idx}")
+                                    
+                                    yield {
+                                        "type": "new_message",
+                                        "case_id": ev.get("case_id") or session.case_id,
+                                        "round": ev["round"],
+                                        "role": role,
+                                        "turn_index": turn_idx,
+                                        "content": partial_content,
+                                        "created_kst": ev["created_kst"],
+                                    }
+                                else:
+                                    # 아직 미완성, 계속 대기
+                                    logger.debug(f"[SSE] victim JSON 미완성, 대기: turn={turn_idx}, len={len(buffered_content)}")
+                        
+                        # ✅ offender는 즉시 전송 (버퍼링 없음)
                         else:
-                            # ✅ new_message 이벤트로 즉시 전송
                             yield {
                                 "type": "new_message",
                                 "case_id": ev.get("case_id") or session.case_id,
                                 "round": ev["round"],
-                                "role": ev["role"],
-                                "turn_index": ev["turn_index"],
-                                "content": ev["content"],
+                                "role": role,
+                                "turn_index": turn_idx,
+                                "content": content,
                                 "created_kst": ev["created_kst"],
                             }
                         
                         # 다음 이벤트 대기
                         get_task = asyncio.create_task(turn_q.get())
 
-                    # 에이전트 실행이 완료되면 루프 종료
+                    # ✅ 에이전트 실행이 완료되면 루프 종료
                     if agent_task in done:
                         # 남은 get_task 정리
                         if not get_task.done():
                             get_task.cancel()
                             with contextlib.suppress(asyncio.CancelledError):
                                 await get_task
-
-                        # ✅ 버퍼에 남은 미완성 JSON 처리
-                        for turn_idx, partial in victim_json_buffer.items():
-                            logger.warning(f"[SSE] 미완성 victim JSON 발견: turn={turn_idx}")
-                            # 그래도 전송 (extractDialogueOrPlainText가 처리)
+                        
+                        # ✅ 버퍼에 남은 미완성 victim 턴 강제 전송
+                        for turn_idx in list(victim_buffers.keys()):
+                            partial = victim_buffers.pop(turn_idx)["content"]
+                            logger.warning(f"[SSE] 종료 시 미완성 victim 턴 발견: turn={turn_idx}, 강제 전송")
+                            
                             yield {
                                 "type": "new_message",
                                 "case_id": session.case_id,
@@ -832,7 +822,6 @@ async def run_orchestrated_stream(db: Session, payload: Dict[str, Any]):
                                 "content": partial,
                                 "created_kst": datetime.now().isoformat(),
                             }
-                        victim_json_buffer.clear()
                         
                         break
 
