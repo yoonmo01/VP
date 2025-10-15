@@ -158,6 +158,9 @@ def simulate_dialogue_impl(input_obj: SimulationInput) -> Dict[str, Any]:
             db.commit()
             turns.append(Turn(role="offender", text=attacker_text))
 
+            compressed_text = attacker_text.replace('\n', ' ').replace('\r', '')
+            print(f"[Conversation][case:{conversation_id}][run:{input_obj.round_no or 1}][turn:{turn_index}][offender] {compressed_text}", flush=True)
+
             # 히스토리
             try:
                 from langchain_core.messages import AIMessage, HumanMessage
@@ -184,6 +187,10 @@ def simulate_dialogue_impl(input_obj: SimulationInput) -> Dict[str, Any]:
                     )
                     db.commit()
                     turns.append(Turn(role="victim", text=victim_text))
+
+                    compressed_text = victim_text.replace('\n', ' ').replace('\r', '')
+                    print(f"[Conversation][case:{conversation_id}][run:{input_obj.round_no or 1}][turn:{turn_index}][victim] {compressed_text}", flush=True)
+                    
                     try:
                         from langchain_core.messages import AIMessage, HumanMessage
                         history_victim.append(AIMessage(victim_text))
@@ -229,6 +236,9 @@ def simulate_dialogue_impl(input_obj: SimulationInput) -> Dict[str, Any]:
             db.commit()
             turns.append(Turn(role="victim", text=victim_text))
 
+            compressed_text = victim_text.replace('\n', ' ').replace('\r', '')
+            print(f"[Conversation][case:{conversation_id}][run:{input_obj.round_no or 1}][turn:{turn_index}][victim] {compressed_text}", flush=True)
+
             try:
                 from langchain_core.messages import AIMessage, HumanMessage
                 history_victim.append(AIMessage(victim_text))
@@ -258,5 +268,3 @@ def simulate_dialogue_impl(input_obj: SimulationInput) -> Dict[str, Any]:
         return {"result": result.model_dump()}
     finally:
         db.close()
-
-

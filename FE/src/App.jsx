@@ -1,4 +1,4 @@
-// src/App.jsx (수정)
+// src/App.jsx (개선 버전)
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import LandingPage from "./LandingPage";
 import SimulatorPage from "./SimulatorPage";
@@ -22,11 +22,6 @@ const RAW_API_BASE = import.meta.env?.VITE_API_URL || window.location.origin;
 const API_BASE = RAW_API_BASE.replace(/\/$/, "");
 const API_PREFIX = "/api";
 export const API_ROOT = `${API_BASE}${API_PREFIX}`;
-
-console.log("API_ROOT =", API_ROOT);
-
-// ✅ MOCK MODE 제거
-const MOCK_MODE = false;
 
 /* ================== API 헬퍼 ================== */
 async function fetchWithTimeout(
@@ -75,13 +70,13 @@ async function getPersonalizedForCase(caseId) {
   return fetchWithTimeout(`${API_ROOT}/personalized/by-case/${encodeURIComponent(caseId)}`, { timeout: 200000 });
 }
 
-// ✅ SSE 스트리밍
-async function* streamReactSimulation(payload) {
-  const response = await fetch(`${API_ROOT}/react-agent/simulation/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+// ✅ SSE 스트리밍 (개선)
+async function* streamReactSimulation(params) {
+  const qs = new URLSearchParams(params).toString();
+  const response = await fetch(
+    `${API_ROOT}/react-agent/simulation/stream?${qs}`,
+    { method: "GET", headers: { Accept: "text/event-stream" } }
+  );
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
@@ -102,7 +97,7 @@ async function* streamReactSimulation(payload) {
     for (const line of lines) {
       if (line.startsWith("data: ")) {
         try {
-          const data = JSON.parse(line.slice(6));
+          const data = JSON.parse(line.slice(6).trim());
           yield data;
         } catch (e) {
           console.warn("SSE 파싱 실패:", line);
@@ -112,6 +107,7 @@ async function* streamReactSimulation(payload) {
   }
 }
 
+// ✅ 메시지 내용 정리 (JSON 파싱)
 function extractDialogueOrPlainText(s) {
   if (!s) return s;
   // 코드펜스 제거
@@ -130,7 +126,6 @@ function extractDialogueOrPlainText(s) {
       }
     }
   } catch (_) {}
-  // 과한 공백 정리
   return cleaned.replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
 }
 
@@ -157,10 +152,6 @@ const App = () => {
 
   // refs
   const scrollContainerRef = useRef(null);
-  const simIntervalRef = useRef(null);
-
-  // 중복 턴 방지용
-  const seenTurnsRef = useRef(new Set());
 
   // UI loading/error
   const [dataLoading, setDataLoading] = useState(true);
@@ -196,7 +187,7 @@ const App = () => {
 
   useLayoutEffect(() => {
     stickToBottom();
-  }, [messages, simulationState, sessionResult]);
+  }, [messages]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -230,79 +221,7 @@ const App = () => {
     };
   }, []);
 
-  /* ✅ 대화 로그 재생 (단순화) */
-  const playLogs = useCallback(
-    (logs = [], options = {}, onComplete = null) => {
-      const { append = false, speed = 700 } = options;
-      
-      if (!Array.isArray(logs) || logs.length === 0) {
-        console.log("[playLogs] 빈 로그 배열");
-        if (onComplete) onComplete();
-        return;
-      }
-
-      console.log(`[playLogs] 재생 시작: ${logs.length}개, append=${append}`);
-
-      if (!append) {
-        setMessages([]);
-      }
-
-      if (simIntervalRef.current) {
-        clearTimeout(simIntervalRef.current);
-        simIntervalRef.current = null;
-      }
-
-      setSimulationState("RUNNING");
-
-      let index = 0;
-      const total = logs.length;
-
-      const step = () => {
-        if (index >= total) {
-          console.log("[playLogs] 재생 완료");
-          simIntervalRef.current = null;
-          setSimulationState("IDLE");
-          if (onComplete) onComplete();
-          return;
-        }
-
-        const log = logs[index];
-        const role = (log.role || "offender").toLowerCase();
-        const content = log.content || log.text || log.message || "";
-        
-        const offenderLabel = selectedScenario?.name || "피싱범";
-        const victimLabel = selectedCharacter?.name || "피해자";
-        const displayLabel = role === "offender" ? offenderLabel : victimLabel;
-        const side = role === "offender" ? "left" : "right";
-        
-        const timestamp = log.created_kst 
-          ? new Date(log.created_kst).toLocaleTimeString()
-          : new Date().toLocaleTimeString();
-
-        console.log(`[playLogs] ${index + 1}/${total} ${role}: ${content.substring(0, 50)}...`);
-
-        addChat(role, content, timestamp, displayLabel, side, {
-          run: log.run,
-          turn: log.turn_index || log.turn,
-        });
-
-        const progressValue = ((index + 1) / total) * 100;
-        if (!append) {
-          setProgress(progressValue);
-        } else {
-          setProgress((p) => Math.min(100, p + (100 / total)));
-        }
-
-        index++;
-        simIntervalRef.current = setTimeout(step, speed);
-      };
-
-      step();
-    },
-    [addChat, setMessages, setProgress, setSimulationState, selectedScenario, selectedCharacter]
-  );
-
-  /* ✅ startSimulation - SSE 스트리밍 */
+  /* ✅ startSimulation - 실시간 SSE 처리 (개선) */
   const startSimulation = async () => {
     if (!selectedScenario || !selectedCharacter) {
       addSystem("시나리오와 캐릭터를 먼저 선택해주세요.");
@@ -310,13 +229,6 @@ const App = () => {
     }
 
     setHasInitialRun(true);
-    seenTurnsRef.current = new Set();   // ✅ 중복 키 초기화
-
-    if (simIntervalRef.current) {
-      clearInterval(simIntervalRef.current);
-      simIntervalRef.current = null;
-    }
-
     setSimulationState("PREPARE");
     setMessages([]);
     setProgress(0);
@@ -327,19 +239,22 @@ const App = () => {
     addSystem(`시뮬레이션 시작: ${selectedScenario.name} / ${selectedCharacter.name}`);
 
     try {
-      const payload = {
+      const params = {
         victim_id: selectedCharacter.id,
         offender_id: selectedScenario.id,
         use_tavily: false,
-        max_turns: 15,
-        round_limit: 5,
+        turns_per_round: 15,
+        max_rounds: 5,
       };
 
       let caseId = null;
-      let totalRounds = payload.round_limit;
+      const totalRounds = Number(params.max_rounds) || 5;
       let currentRound = 0;
+      let turnCount = 0;
 
-      for await (const event of streamReactSimulation(payload)) {
+      setSimulationState("RUNNING");
+
+      for await (const event of streamReactSimulation(params)) {
         console.log("[SSE Event]", event);
 
         if (event.type === "error") {
@@ -354,106 +269,57 @@ const App = () => {
         
         else if (event.type === "round_start") {
           currentRound = event.round;
-          addSystem(event.message);
-        }
-        
-        else if (event.type === "simulation_progress") {
-          setSimulationState("RUNNING");
-          addSystem(event.message || `라운드 ${event.round} 진행 중...`);
-        }
-        
-        else if (event.type === "conversation_logs") {
-          // 진행 상황만 업데이트
-          setProgress((event.round / totalRounds) * 100);
-
-          // ✅ 누락된 턴만 보정 (서버가 한꺼번에 보내줄 수 있으므로)
-          const logs = Array.isArray(event.logs) ? event.logs : [];
-          const missing = logs
-            .sort((a,b) => (a.turn_index ?? 0) - (b.turn_index ?? 0))
-            .filter((log) => {
-              const role = (log.role || "offender").toLowerCase();
-              const key = `${event.round}:${log.turn_index}:${role}`;
-              return !seenTurnsRef.current.has(key);
-            });
-
-          for (const log of missing) {
-            const role = (log.role || "offender").toLowerCase();
-            const raw = log.content || log.text || log.message || "";
-            const content = extractDialogueOrPlainText(raw);
-
-            const label =
-              role === "offender"
-                ? (selectedScenario?.name || "피싱범")
-                : (selectedCharacter?.name || "피해자");
-            const side = role === "offender" ? "left" : "right";
-            const ts = log.created_kst
-              ? new Date(log.created_kst).toLocaleTimeString()
-              : new Date().toLocaleTimeString();
-
-            addChat(role, content, ts, label, side, {
-              run: log.run,
-              turn: log.turn_index || log.turn,
-            });
-
-            const key = `${event.round}:${log.turn_index}:${role}`;
-            seenTurnsRef.current.add(key);
-          }
-
-          // 안내 메시지 (선택)
-          if (event.status === "no_logs") {
-            addSystem(`⚠️ 라운드 ${event.round} 로그를 가져오지 못했습니다.`);
-          }
-          setSimulationState("RUNNING");
-        }
-        
-        else if (event.type === "round_complete") {
-          // conversation_logs에서 이미 처리했으므로 중복 방지
-          addSystem(`라운드 ${event.round} 완료 (${event.total_turns}턴)`);
+          addSystem(`📍 라운드 ${currentRound} 시작`);
+          setProgress((currentRound / totalRounds) * 100);
         }
 
+        // ✅ 핵심: new_message 이벤트로 실시간 대화 표시
         else if (event.type === "new_message") {
-          // 중복 방지
+          turnCount++;
+          
           const role = (event.role || "offender").toLowerCase();
-          const key = `${event.round}:${event.turn_index}:${event.role}`;
-          if (seenTurnsRef.current.has(key)) {
-            continue;
-          }
-          seenTurnsRef.current.add(key);
+          const rawContent = event.content || "";
+          const content = extractDialogueOrPlainText(rawContent);
 
-          // 내용 정리 (victim의 ```json``` 포함 케이스)
-          const raw = event.content || "";
-          const content = extractDialogueOrPlainText(raw);
-
-          const label =
-            role === "offender"
-              ? (selectedScenario?.name || "피싱범")
-              : (selectedCharacter?.name || "피해자");
+          const label = role === "offender"
+            ? (selectedScenario?.name || "피싱범")
+            : (selectedCharacter?.name || "피해자");
 
           const side = role === "offender" ? "left" : "right";
-          const ts = event.created_kst
+          const timestamp = event.created_kst
             ? new Date(event.created_kst).toLocaleTimeString()
             : new Date().toLocaleTimeString();
 
-          // 바로 대화창에 append
-          addChat(role, content, ts, label, side, {
+          // ✅ 즉시 화면에 추가
+          addChat(role, content, timestamp, label, side, {
             run: event.round,
             turn: event.turn_index,
           });
 
-          // 스피너 감추기 / 진행중 표시
-          setSimulationState("RUNNING");
-          setProgress((p) => Math.min(100, p + 1));
+          // 진행률 업데이트 (턴 기반)
+          const estimatedTotalTurns = totalRounds * (params.turns_per_round || 15);
+          setProgress(Math.min(95, (turnCount / estimatedTotalTurns) * 100));
+        }
+
+        // conversation_logs는 백업용으로만 사용 (누락 방지)
+        else if (event.type === "conversation_logs") {
+          // new_message로 이미 처리했으므로 건너뛰기
+          console.log(`[Backup] 라운드 ${event.round} 로그 수신 (${event.logs?.length || 0}개)`);
+        }
+        
+        else if (event.type === "round_complete") {
+          addSystem(`✅ 라운드 ${event.round} 완료`);
         }
         
         else if (event.type === "judgement") {
           addSystem(
-            `라운드 ${event.round} 판정: ${event.phishing ? "피싱 성공" : "피싱 실패"} - ${event.reason}`
+            `⚖️ 라운드 ${event.round} 판정: ${event.phishing ? "피싱 성공" : "피싱 실패"} - ${event.reason}`
           );
         }
         
         else if (event.type === "guidance_generated") {
           addSystem(
-            `라운드 ${event.round} 지침 생성: ${event.guidance?.categories?.join(", ") || "N/A"}`
+            `💡 라운드 ${event.round} 지침 생성 완료`
           );
         }
         
@@ -461,7 +327,7 @@ const App = () => {
           setProgress(100);
           setSimulationState("IDLE");
           setShowReportPrompt(true);
-          addSystem("시뮬레이션 완료!");
+          addSystem("🎉 시뮬레이션 완료!");
           
           // 최종 데이터 조회
           if (caseId) {
@@ -484,7 +350,7 @@ const App = () => {
 
     } catch (err) {
       console.error("SSE 스트리밍 실패:", err);
-      addSystem(`시뮬레이션 실패: ${err.message}`);
+      addSystem(`❌ 시뮬레이션 실패: ${err.message}`);
       setSimulationState("IDLE");
     }
   };
@@ -504,41 +370,24 @@ const App = () => {
     setCurrentPage("landing");
   };
 
-  // cleanup
-  useEffect(() => {
-    return () => {
-      if (simIntervalRef.current) {
-        clearInterval(simIntervalRef.current);
-        simIntervalRef.current = null;
-      }
-    };
-  }, []);
-
   /* pageProps */
   const pageProps = {
     COLORS,
-    mockMode: MOCK_MODE,
     apiRoot: API_ROOT,
-
     onBack: handleBack,
     setCurrentPage,
-
     selectedScenario,
     setSelectedScenario,
     selectedCharacter,
     setSelectedCharacter,
-
     simulationState,
     setSimulationState,
-
     messages,
     addSystem,
     addChat,
-
     sessionResult,
     resetToSelection,
     startSimulation,
-
     scenarios,
     characters,
     scrollContainerRef,
@@ -546,20 +395,16 @@ const App = () => {
     dataLoading,
     dataError,
     currentCaseId,
-
     showReportPrompt,
     setShowReportPrompt,
     hasInitialRun,
-
     progress,
     setProgress,
-
     victimImageUrl: selectedCharacter
       ? getVictimImage(selectedCharacter.photo_path)
       : null,
   };
 
-  // ✅ 이미지 헬퍼
   function getVictimImage(photoPath) {
     if (!photoPath) return null;
     try {
@@ -582,7 +427,6 @@ const App = () => {
         <ReportPage
           {...pageProps}
           apiRoot={API_ROOT}
-          mockMode={MOCK_MODE}
           defaultCaseData={defaultCaseData}
         />
       )}
@@ -591,4 +435,3 @@ const App = () => {
 };
 
 export default App;
-

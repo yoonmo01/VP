@@ -742,7 +742,7 @@ async def run_orchestrated_stream(db: Session, payload: Dict[str, Any]):
                     "status": "running",
                 }
 
-                # ── 에이전트 호출을 백그라운드 태스크로 시작 ──
+                # ── ✅ 핵심: 에이전트 호출과 턴 스트리밍을 동시에 처리 ──
                 agent_task = asyncio.create_task(
                     run_in_threadpool(
                         ex.invoke, llm_call, config={"callbacks": [log_capture, stopping_callback]}
@@ -750,65 +750,132 @@ async def run_orchestrated_stream(db: Session, payload: Dict[str, Any]):
                 )
                 used_tools.append("mcp.simulator_run")
 
-                # ── 동시에 큐에서 턴 이벤트를 즉시 퍼블리시 ──
+                # ── ✅ 동시에 큐에서 턴 이벤트를 즉시 퍼블리시 ──
                 get_task = asyncio.create_task(turn_q.get())
+
+                # JSON 버퍼
+                victim_json_buffer = {}
+                
+                # ✅ 중요: 에이전트 실행 중에 턴 이벤트를 실시간으로 전송
                 while True:
                     done, _ = await asyncio.wait(
                         {agent_task, get_task}, return_when=asyncio.FIRST_COMPLETED
                     )
 
+                    # 턴 이벤트가 도착하면 즉시 프론트로 전송
                     if get_task in done:
-                        ev = get_task.result()  # {"case_id","round","turn_index","role","content","created_kst"}
-                        # ⚠️ 여기서는 오직 단일 턴만 new_message로 보낸다
-                        yield {
-                            "type": "new_message",
-                            "case_id": ev.get("case_id") or session.case_id,
-                            "round": ev["round"],
-                            "role": ev["role"],
-                            "turn_index": ev["turn_index"],
-                            "content": ev["content"],
-                            "created_kst": ev["created_kst"],
-                        }
+                        ev = get_task.result()
+
+                        role = ev.get("role", "").lower()
+                        turn_idx = ev.get("turn_index")
+                        content = ev.get("content", "")
+
+                        # ✅ victim이고 JSON 블록인 경우 버퍼링
+                        if role == "victim" and (content.strip().startswith("```json") or turn_idx in victim_json_buffer):
+                            # 버퍼에 추가
+                            if turn_idx not in victim_json_buffer:
+                                victim_json_buffer[turn_idx] = ""
+                            victim_json_buffer[turn_idx] += content
+                            
+                            # 완성 체크: ```으로 끝나면 완성
+                            if victim_json_buffer[turn_idx].strip().endswith("```"):
+                                # 완성된 JSON 전송
+                                complete_content = victim_json_buffer.pop(turn_idx)
+                                
+                                yield {
+                                    "type": "new_message",
+                                    "case_id": ev.get("case_id") or session.case_id,
+                                    "round": ev["round"],
+                                    "role": role,
+                                    "turn_index": turn_idx,
+                                    "content": complete_content,  # ✅ 완전한 JSON
+                                    "created_kst": ev["created_kst"],
+                                }
+                            # 아직 미완성이면 다음 조각 대기
+                            else:
+                                pass  # 계속 버퍼링
+
+                        # ✅ victim이 아니거나 JSON 블록이 아니면 즉시 전송    
+                        else:
+                            # ✅ new_message 이벤트로 즉시 전송
+                            yield {
+                                "type": "new_message",
+                                "case_id": ev.get("case_id") or session.case_id,
+                                "round": ev["round"],
+                                "role": ev["role"],
+                                "turn_index": ev["turn_index"],
+                                "content": ev["content"],
+                                "created_kst": ev["created_kst"],
+                            }
+                        
+                        # 다음 이벤트 대기
                         get_task = asyncio.create_task(turn_q.get())
 
+                    # 에이전트 실행이 완료되면 루프 종료
                     if agent_task in done:
                         # 남은 get_task 정리
                         if not get_task.done():
                             get_task.cancel()
                             with contextlib.suppress(asyncio.CancelledError):
                                 await get_task
+
+                        # ✅ 버퍼에 남은 미완성 JSON 처리
+                        for turn_idx, partial in victim_json_buffer.items():
+                            logger.warning(f"[SSE] 미완성 victim JSON 발견: turn={turn_idx}")
+                            # 그래도 전송 (extractDialogueOrPlainText가 처리)
+                            yield {
+                                "type": "new_message",
+                                "case_id": session.case_id,
+                                "round": round_no,
+                                "role": "victim",
+                                "turn_index": turn_idx,
+                                "content": partial,
+                                "created_kst": datetime.now().isoformat(),
+                            }
+                        victim_json_buffer.clear()
+                        
                         break
 
-                # ── 라운드 종료 후: 로그 백필(배열) ──
+                # ── ✅ 라운드 종료 후: 로그 백필 (누락 방지용 배열) ──
                 round_logs = log_capture.get_round_logs(round_no)
 
                 # 콜백이 비었으면 MCP 반환의 conversation_logs(문자열) 파싱
                 res_run = agent_task.result() if not agent_task.cancelled() else None
-                if (not round_logs) and isinstance(res_run, dict) and isinstance(res_run.get("conversation_logs"), str):
-                    parsed = parse_conversation_logs(res_run["conversation_logs"], target_round=round_no)
-                    if parsed:
-                        round_logs = parsed
+                
+                # ✅ 백필: conversation_logs 문자열이 있으면 파싱
+                if (not round_logs) and isinstance(res_run, dict):
+                    # res_run이 dict인 경우 conversation_logs 확인
+                    conv_logs_str = res_run.get("conversation_logs")
+                    if isinstance(conv_logs_str, str):
+                        parsed = parse_conversation_logs(conv_logs_str, target_round=round_no)
+                        if parsed:
+                            round_logs = parsed
+                            logger.info(f"[SSE] 백필 파싱: {len(parsed)}개 로그 복구")
 
-                # 라운드1에서 MCP가 생성한 실제 case_id로 갱신
+                # ✅ 라운드1에서 MCP가 생성한 실제 case_id로 갱신
                 if round_no == 1 and round_logs:
                     real_case = next((l.get("case_id") for l in round_logs if l.get("case_id")), None)
                     if real_case and real_case != session.case_id:
                         logger.warning("[SSE] case_id 업데이트: %s → %s", session.case_id, real_case)
                         session.case_id = real_case
-                        yield {"type": "case_id_updated", "case_id": session.case_id, "reason": "로그에서 실제 case_id 확인"}
+                        yield {
+                            "type": "case_id_updated",
+                            "case_id": session.case_id,
+                            "reason": "로그에서 실제 case_id 확인"
+                        }
 
+                # ✅ conversation_logs 이벤트 (배열로 전송 - 백업/검증용)
                 if round_logs:
                     round_logs = sorted(round_logs, key=lambda x: x.get("turn_index", 0))
-                    # ✅ 통짜 문자열을 new_message로 보내지 않고, 배열로만 보낸다
                     yield {
                         "type": "conversation_logs",
                         "round": round_no,
-                        "logs": round_logs,
+                        "logs": round_logs,  # ← 배열로 전송 (문자열 아님!)
                         "total_turns": len(round_logs),
                         "case_id": session.case_id,
                         "status": "completed",
                     }
-                    logger.info("[SSE] ✅ 라운드 %s: %s개 로그 전송", round_no, len(round_logs))
+                    logger.info("[SSE] ✅ 라운드 %s: %s개 로그 전송 (백필)", round_no, len(round_logs))
                 else:
                     logger.warning("[SSE] ⚠️ 라운드 %s: 로그 없음", round_no)
                     yield {

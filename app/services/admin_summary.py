@@ -168,9 +168,34 @@ def _escape_inner_quotes_for_value_of(key: str, text: str) -> str:
     return pat.sub(_fix, text)
 
 def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
-    s0 = _normalize_quotes(_strip_code_fences(s))
-    raw = _extract_json_with_balancing(s0)
+    from typing import Any, Dict, Optional
+    import json, re
 
+    # ---- 전처리
+    s0 = _normalize_quotes(_strip_code_fences(s or ""))
+    s0 = s0.replace("\ufeff", "").replace("\r", "").strip()
+
+    # 기존 밸런싱 추출 (없으면 전체 문자열로 폴백)
+    raw = _extract_json_with_balancing(s0) or s0
+
+    # ---- 보조: 문자열에서 "마지막으로 완결된 JSON 오브젝트" 하나만 추출
+    def _pick_last_json_object(text: str) -> Optional[str]:
+        stack = 0
+        start = None
+        last = None
+        for i, ch in enumerate(text):
+            if ch == "{":
+                if stack == 0:
+                    start = i
+                stack += 1
+            elif ch == "}":
+                if stack > 0:
+                    stack -= 1
+                    if stack == 0 and start is not None:
+                        last = text[start:i+1]
+        return last
+
+    # ---- 최종 sanitize
     def _sanitize(d: Dict[str, Any]) -> Dict[str, Any]:
         phishing = bool(d.get("phishing", False))
         evidence = str(d.get("evidence", ""))
@@ -181,12 +206,10 @@ def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
         if score > 100: score = 100
         level = str(risk.get("level") or "")
         if level not in {"low", "medium", "high", "critical"}:
-            level = (
-                "critical" if score >= 75 else
-                "high"     if score >= 50 else
-                "medium"   if score >= 25 else
-                "low"
-            )
+            level = ("critical" if score >= 75 else
+                     "high"     if score >= 50 else
+                     "medium"   if score >= 25 else
+                     "low")
         rationale = str(risk.get("rationale", ""))
 
         vul = d.get("victim_vulnerabilities") or []
@@ -197,9 +220,8 @@ def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
         cont = d.get("continue") or {}
         rec = cont.get("recommendation") or ("stop" if level == "critical" else "continue")
         reason = str(cont.get("reason", "")) or (
-            "위험도가 critical로 판정되어 시나리오를 종료합니다."
-            if rec == "stop" else
-            "위험도가 critical이 아니므로 수법 고도화/추가 라운드 진행을 권고합니다."
+            "위험도가 critical로 판정되어 시나리오를 종료합니다." if rec == "stop"
+            else "위험도가 critical이 아니므로 수법 고도화/추가 라운드 진행을 권고합니다."
         )
 
         return {
@@ -210,20 +232,73 @@ def _json_loads_lenient_full(s: str) -> Dict[str, Any]:
             "continue": {"recommendation": rec, "reason": reason},
         }
 
+    # ---- 파싱 시퀀스: 마지막 JSON → 첫 JSON → 배열 → 기존 보정
+    def _try_parse(candidate: str) -> Any:
+        # 0) 딱 맞게 떨어지면 바로
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+        # 1) 마지막 완결 오브젝트만
+        last = _pick_last_json_object(candidate)
+        if last:
+            try:
+                return json.loads(last)
+            except json.JSONDecodeError:
+                pass
+
+        # 2) 첫 번째 오브젝트 정규식
+        m = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", candidate, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # 3) 배열도 허용
+        m2 = re.search(r"\[[\s\S]*\]", candidate)
+        if m2:
+            try:
+                return json.loads(m2.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # 4) 실패
+        raise
+
+    # 1차 시도
     try:
-        return _sanitize(json.loads(raw))
+        obj = _try_parse(raw)
+        if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+            obj = obj[0]
+        if not isinstance(obj, dict):
+            obj = {"evidence": str(obj)}
+        return _sanitize(obj)
     except Exception:
         pass
 
+    # 2차: 숫자/콤마 보정
     fixed_min = re.sub(r'(:\s*)0+(\d+)(\s*[,\}])', r': \2\3', raw)
     fixed_min = re.sub(r",(\s*[}\]])", r"\1", fixed_min)
     try:
-        return _sanitize(json.loads(fixed_min))
+        obj = _try_parse(fixed_min)
+        if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+            obj = obj[0]
+        if not isinstance(obj, dict):
+            obj = {"evidence": str(obj)}
+        return _sanitize(obj)
     except Exception:
         pass
 
+    # 3차: evidence 값만 이스케이프 후 재시도
     fixed_esc = _escape_inner_quotes_for_value_of("evidence", fixed_min)
-    return _sanitize(json.loads(fixed_esc))
+    obj = _try_parse(fixed_esc)  # 실패 시 그대로 예외 발생
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        obj = obj[0]
+    if not isinstance(obj, dict):
+        obj = {"evidence": str(obj)}
+    return _sanitize(obj)
 
 # =========================
 # 메인: 라운드별 전체대화 판정

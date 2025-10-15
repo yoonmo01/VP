@@ -313,7 +313,6 @@ class OnDemandMCPManager:
                 round_no=args.get("round_no"),
             )
 
-            # (옵션) LangSmith에 더 풍부한 컨텍스트
             from langchain_core.runnables import RunnableConfig
             cfg: RunnableConfig = {
                 "run_name": "mcp.simulator_run",
@@ -330,13 +329,19 @@ class OnDemandMCPManager:
             
             case_id, total_turns = run_two_bot_simulation(db, sim_request).with_config(cfg) if hasattr(run_two_bot_simulation, "with_config") else run_two_bot_simulation(db, sim_request)
             
-            # ✅ Agent 프로젝트의 ConversationLog 조회 (별도 DB)
-            from app.db.models import ConversationLog  # ← Agent 프로젝트의 모델
+            # ✅ Agent 프로젝트의 ConversationLog 조회
+            from app.db.models import ConversationLog
             
             conversations = db.query(ConversationLog).filter(
                 ConversationLog.case_id == case_id,
                 ConversationLog.run == (args.get("round_no") or 1)
             ).order_by(ConversationLog.turn_index).all()
+
+            # ✅ 디버그 로그 추가
+            logger.info(f"[MCP] DB 조회 결과: {len(conversations)}개 로그")
+            offender_count = len([c for c in conversations if c.role == "offender"])
+            victim_count = len([c for c in conversations if c.role == "victim"])
+            logger.info(f"[MCP] 역할별: offender={offender_count}, victim={victim_count}")
             
             # ✅ 포맷팅
             conversation_logs = []
@@ -349,7 +354,7 @@ class OnDemandMCPManager:
                 "case_id": str(case_id),
                 "total_turns": total_turns,
                 "timestamp": __import__("datetime").datetime.now().isoformat(),
-                "conversation_logs": "\n".join(conversation_logs),  # ✅ 추가
+                "conversation_logs": "\n".join(conversation_logs),
                 "debug_echo": {
                     "offender_id": sim_request.offender_id,
                     "victim_id": sim_request.victim_id,
@@ -468,31 +473,31 @@ def make_mcp_tools(mcp_controller=None):
                     }))
 
                     final_result: Dict[str, Any] | None = None
-                    collected_text_chunks: list[str] = []   # 폴백용
+                    collected_text_chunks: list[str] = []
 
                     # 3) 메시지 수신 루프
                     while True:
                         raw = await websocket.recv()
                         data = json.loads(raw)
+                        
                         # (a) MCP가 이벤트(턴)를 푸시하는 케이스
                         if "method" in data and data["method"] in ("tools/event", "notification", "simulator/turn"):
                             params = data.get("params") or {}
-                            # 여기는 MCP가 내보내는 실제 필드명에 맞게 매핑해줘야 함
                             turn = params.get("turn")
                             if turn and mcp_controller:
                                 try:
                                     await mcp_controller.emit_turn(
-                                        case_id = turn.get("case_id") or arguments.get("case_id_override"),
-                                        round_no = int(turn.get("round") or arguments.get("round_no") or 1),
-                                        turn_index = int(turn.get("turn_index") or 0),
-                                        role = (turn.get("role") or "").lower(),
-                                        content = turn.get("content") or "",
-                                        created_kst = datetime.now().isoformat(),
+                                        case_id=turn.get("case_id") or arguments.get("case_id_override"),
+                                        round_no=int(turn.get("round") or arguments.get("round_no") or 1),
+                                        turn_index=int(turn.get("turn_index") or 0),
+                                        role=(turn.get("role") or "").lower(),
+                                        content=turn.get("content") or "",
+                                        created_kst=datetime.now().isoformat(),
                                     )
-                                    logger.info("[MCP/ws] EMIT TURN run=%s turn=%s role=%s", turn.get("round"), turn.get("turn_index"), turn.get("role"))
+                                    logger.info("[MCP/ws] ✅ EMIT TURN run=%s turn=%s role=%s", 
+                                            turn.get("round"), turn.get("turn_index"), turn.get("role"))
                                 except Exception as e:
                                     logger.warning(f"[MCP/ws] emit_turn failed: {e}")
-                            # 혹시 텍스트 로그가 같이 오면 폴백을 위해 모아둠
                             if "text" in params:
                                 collected_text_chunks.append(params["text"])
 
@@ -503,25 +508,29 @@ def make_mcp_tools(mcp_controller=None):
                             final_result = content if isinstance(content, dict) else {"content": content}
                             break
 
-                        # (c) 기타: 디버그/로그
-                        else:
-                            if isinstance(data, dict):
-                                txt = data.get("result", {}).get("text") or data.get("params", {}).get("text")
-                                if txt:
-                                    collected_text_chunks.append(txt)
-
-                    # 4) 폴백: 스트림 이벤트를 못 받았으면 최종 텍스트를 턴별 파싱하여 emit
-                    if mcp_controller and collected_text_chunks:
-                        blob = "\n".join(collected_text_chunks)
-                        for log in parse_conversation_logs(blob, target_round=arguments.get("round_no")):
-                            await mcp_controller.emit_turn(
-                                case_id = log.get("case_id") or arguments.get("case_id_override"),
-                                round_no = log["run"],
-                                turn_index = log["turn_index"],
-                                role = log["role"],
-                                content = log["content"],
-                                created_kst = log["created_kst"],
+                    # 4) ✅ 폴백: 최종 결과에서 conversation_logs 파싱하여 emit
+                    if final_result and "conversation_logs" in final_result:
+                        log_text = final_result["conversation_logs"]
+                        if isinstance(log_text, str) and mcp_controller:
+                            parsed_logs = parse_conversation_logs(
+                                log_text, 
+                                target_round=arguments.get("round_no")
                             )
+                            
+                            logger.info(f"[MCP/ws] 폴백 파싱: {len(parsed_logs)}개 로그")
+                            
+                            for log in parsed_logs:
+                                await mcp_controller.emit_turn(
+                                    case_id=log.get("case_id") or arguments.get("case_id_override"),
+                                    round_no=log["run"],
+                                    turn_index=log["turn_index"],
+                                    role=log["role"],
+                                    content=log["content"],
+                                    created_kst=log["created_kst"],
+                                )
+                                logger.debug(
+                                    f"[MCP/ws] 폴백 EMIT: turn={log['turn_index']}, role={log['role']}"
+                                )
 
                     # 5) 반환값 정리
                     content = final_result or {}
@@ -540,6 +549,7 @@ def make_mcp_tools(mcp_controller=None):
             except Exception as e:
                 logger.error(f"[MCP/ws] 통신 실패: {e}")
                 return {"ok": False, "error": str(e)}
+
 
         return run_coro_safely(_call_ws(mcp_controller))
 
