@@ -46,8 +46,8 @@ async def stream_simulation_sse(
     offender_id: Optional[int] = Query(default=None),
     victim_id: Optional[int] = Query(default=None),
     use_tavily: bool = Query(default=False),
-    turns_per_round: int = Query(default=15),
-    max_rounds: int = Query(default=3),
+    max_turns: int = Query(default=15),
+    round_limit: int = Query(default=3),
     db: Session = Depends(get_db),
 ):
     """
@@ -66,8 +66,8 @@ async def stream_simulation_sse(
         "offender_id": offender_id,
         "victim_id": victim_id,
         "use_tavily": bool(use_tavily),
-        "turns_per_round": int(turns_per_round),
-        "max_rounds": int(max_rounds),
+        "max_turns": int(max_turns),
+        "round_limit": int(round_limit),
         # 필요하면 custom_scenario, custom_victim 등도 쿼리로 받아 추가
     }
 
@@ -101,7 +101,7 @@ async def stream_simulation_sse(
                 await asyncio.sleep(0)  # 이벤트 루프 양보
 
             # 완료 이벤트
-            yield _json_line({"type": "complete", "case_id": resolved_case_id, "ts": datetime.now().isoformat()})
+            
 
         except Exception as e:
             logger.exception("SSE stream failed")

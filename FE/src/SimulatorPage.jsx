@@ -82,7 +82,7 @@ const SimulatorPage = ({
   boardDelaySec = 3,   // 오른쪽 보드 "내용" 등장 지연(분석 탭에만 적용)
   intermissionSec = 3, // 두 번째 대화 직전 스피너 노출
   // ⏱️ 로그 한 줄 출력 간격(밀리초) — 천천히 딱딱딱
-  logTickMs = 220,
+  
 }) => {
   const needScenario = !selectedScenario;
   const needCharacter = !selectedCharacter;
@@ -97,15 +97,12 @@ const SimulatorPage = ({
   // 수사보드 탭
   const [activeAgentTab, setActiveAgentTab] = useState("log"); // "log" | "insight"
 
+  
   // ✅ 추가: 실제 데이터 사용
-  const agentLogText = useMemo(() => {
-    if (!sessionResult?.agentLogs) return "";
-    
-    // agentLogs를 텍스트로 변환
-    return sessionResult.agentLogs
-      .map(log => `[${log.role}] ${log.content}`)
-      .join("\n");
-  }, [sessionResult?.agentLogs]);
+  const [agentLogText, setAgentLogText] = useState("");
+
+  // ✅ 분석 결과 상태 (라운드별)
+  const [analysisResults, setAnalysisResults] = useState([]);
 
 
 
@@ -319,62 +316,7 @@ const SimulatorPage = ({
      - 실행 시작과 동시에 한 줄씩 출력
      - 분석 탭 지연은 그대로, 로그는 지연 미적용
      ================================ */
-  const agentLogLines = useMemo(
-    () =>
-      agentLogText
-        .split(/\r?\n/)
-        .map((l) => l.trimEnd())
-        .filter((l) => l.length > 0),
-    [agentLogText]
-  );
-  const [displayedAgentLogText, setDisplayedAgentLogText] = useState("");
-  const logIndexRef = useRef(0);
-  const logTimerRef = useRef(null);
-
-  // 로그 재시작/리셋 조건: 완전히 다시 시작할 때 초기화
-  useEffect(() => {
-    if (simulationState === "IDLE" && !hasChatLog) {
-      setDisplayedAgentLogText("");
-      logIndexRef.current = 0;
-      if (logTimerRef.current) {
-        clearInterval(logTimerRef.current);
-        logTimerRef.current = null;
-      }
-    }
-  }, [simulationState, hasChatLog]);
-
-  // 실행되자마자(= IDLE이 아니면) 로그 출력 시작
-  useEffect(() => {
-    const shouldStart =
-      simulationState === "PREPARE" ||
-      simulationState === "RUNNING" ||
-      (simulationState === "IDLE" && hasChatLog); // 이미 대화가 있으면 시작
-
-    if (!shouldStart) return;
-    if (logTimerRef.current) return; // 중복 시작 방지
-
-    logTimerRef.current = setInterval(() => {
-      const i = logIndexRef.current;
-      if (i >= agentLogLines.length) {
-        clearInterval(logTimerRef.current);
-        logTimerRef.current = null;
-        return;
-      }
-      setDisplayedAgentLogText((prev) =>
-        prev ? `${prev}\n${agentLogLines[i]}` : agentLogLines[i]
-      );
-      logIndexRef.current = i + 1;
-    }, Math.max(80, logTickMs));
-
-    return () => {
-      if (logTimerRef.current) {
-        clearInterval(logTimerRef.current);
-        logTimerRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simulationState, hasChatLog, agentLogLines, logTickMs]);
-
+  
   return (
     <div
       className="min-h-screen"
@@ -1057,7 +999,7 @@ const SimulatorPage = ({
                     >
                       <div className="h-full overflow-auto">
                         {activeAgentTab === "log" ? (
-                          <TerminalLog data={displayedAgentLogText} />
+                          <TerminalLog data={agentLogText} />
                         ) : showBoardContent ? (
                           <InvestigationBoard
                             COLORS={THEME}

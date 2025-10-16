@@ -243,12 +243,12 @@ const App = () => {
         victim_id: selectedCharacter.id,
         offender_id: selectedScenario.id,
         use_tavily: false,
-        turns_per_round: 15,
-        max_rounds: 5,
+        max_turns: 15,
+        round_limit: 5,
       };
 
       let caseId = null;
-      const totalRounds = Number(params.max_rounds) || 5;
+      const totalRounds = Number(params.round_limit) || 5;
       let currentRound = 0;
       let turnCount = 0;
 
@@ -265,6 +265,43 @@ const App = () => {
           caseId = event.case_id;
           setCurrentCaseId(caseId);
           addSystem(`케이스 생성: ${caseId}`);
+        }
+
+        // ✅ 여기에 추가!
+        else if (event.type === "agent_log") {
+          console.log("✅✅✅ agent_log 전체:", event);
+          console.log("📝 data:", event.data);
+          console.log("📝 text:", event.data?.text);
+          const text = event.data?.text ?? "";
+          if (!text) return;
+          if (import.meta.env.DEV) console.log(text);
+
+          console.log(text);
+          // 로그 타입 감지 및 색상 적용
+          if (text.startsWith("Thought:")) {
+            console.log(`%c💭 ${text}`, 'color: #5865F2; font-weight: bold');
+          } 
+          else if (text.startsWith("Action:")) {
+            console.log(`%c⚡ ${text}`, 'color: #FEE75C; font-weight: bold');
+          } 
+          else if (text.startsWith("Action Input:")) {
+            console.log(`%c📥 ${text}`, 'color: #57F287; font-family: monospace; font-size: 0.9em');
+          } 
+          else if (text.startsWith("Observation:")) {
+            console.log(`%c👁️ ${text}`, 'color: #ED4245; font-weight: bold');
+          } 
+          else if (text.includes("[Conversation]")) {
+            console.log(`%c💬 ${text}`, 'color: #00D9FF; font-family: monospace');
+          }
+          else if (text.includes("ERROR") || text.includes("Exception")) {
+            console.error(`%c[Agent Error] ${text}`, 'color: #ED4245; font-weight: bold');
+          }
+          else if (text.includes("WARNING")) {
+            console.warn(`%c[Agent Warning] ${text}`, 'color: #FEE75C');
+          }
+          else {
+            console.log(`%c[Agent] ${text}`, 'color: #B5BAC1');
+          }
         }
         
         else if (event.type === "round_start") {
@@ -297,7 +334,7 @@ const App = () => {
           });
 
           // 진행률 업데이트 (턴 기반)
-          const estimatedTotalTurns = totalRounds * (params.turns_per_round || 15);
+          const estimatedTotalTurns = totalRounds * (params.max_turns || 15);
           setProgress(Math.min(95, (turnCount / estimatedTotalTurns) * 100));
         }
 
