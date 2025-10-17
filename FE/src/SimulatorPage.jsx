@@ -18,7 +18,7 @@ import InvestigationBoard from "./InvestigationBoard";
 import TTSModal from "./components/TTSModal";
 import CustomScenarioButton from "./CustomScenarioButton";
 import CustomScenarioModal from "./CustomScenarioModal";
-import TerminalLog from "./TerminalLog";
+import TerminalLog from "./components/TerminalLog";
 import InlinePhishingSummaryBox from "./InlinePhishingSummaryBox";
 import { THEME as BASE_THEME } from "./constants/colors";
 
@@ -36,6 +36,11 @@ const getVictimImage = (photoPath) => {
   }
   return null;
 };
+
+const countChatMessages = (messages = []) =>
+  Array.isArray(messages)
+    ? messages.filter((m) => (m?.type ?? m?._kind) === "chat").length
+    : 0;
 
 const SimulatorPage = ({
   COLORS,
@@ -154,36 +159,7 @@ const SimulatorPage = ({
     setShowCustomModal(false);
   };
 
-   // 🔻 임시: 백엔드 연결 전 더미 데이터 구조 (형태 맞춤) => 이런 느낌으로 맞춰야 함
-    useEffect(() => {
-      const mockLog = `
-      Action: mcp.simulator_run
-      Action Input: {"offender_id":1,"victim_id":1}
-      ---
-      Thought: 분석 실행 중...
-      Result: OK
-      `;
-          const mockInsights = [
-            {
-              run_no: 1,
-              phishing: true,
-              evidence: "피해자가 계좌번호를 전달함.",
-              risk: { score: 85, level: "high", rationale: "낯선 번호에 즉시 응답" },
-              victim_vulnerabilities: ["낯선 전화 응답", "계좌번호 노출"],
-            },
-            {
-              run_no: 2,
-              phishing: false,
-              evidence: "피해자가 의심하여 통화를 종료함.",
-              risk: { score: 40, level: "low", rationale: "경계심 강화됨" },
-              victim_vulnerabilities: [],
-            },
-          ];
-          setAgentLogText(mockLog);
-          setInsightsList(mockInsights);
-      }, []);
-
-       // 메시지 표준화
+     // 메시지 표준화
       const normalizeMessage = (m) => {
         const role = (m?.sender || m?.role || "").toLowerCase();
         return {
@@ -193,6 +169,17 @@ const SimulatorPage = ({
           _kind: "chat",
         };
       };
+
+  /* ----------------------------------------------------------
+   📊 진행률 계산
+  ---------------------------------------------------------- */
+  useEffect(() => {
+    const pct = Math.min(
+      100,
+      Math.round((countChatMessages(messages) / 10) * 100)
+    );
+    setProgress(pct);
+  }, [messages, setProgress]);
 
   const hasChatLog = useMemo(() => countChatMessages(messages) > 0, [messages]);
 
