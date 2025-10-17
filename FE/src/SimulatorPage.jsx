@@ -37,22 +37,6 @@ const getVictimImage = (photoPath) => {
   return null;
 };
 
-  // 진행률 계산
-  const countChatMessages = (msgs = []) =>
-    msgs.filter((m) => (m?.type ?? m?._kind) === "chat").length;
-
-  useEffect(() => {
-    if (typeof setProgress !== "function") return;
-    const pct = Math.min(100, Math.round((countChatMessages(messages) / 10) * 100));
-    setProgress(pct);
-  }, [messages, setProgress]);
-
-  // 보드 표시 지연
-  useEffect(() => {
-    const timer = setTimeout(() => setShowBoardContent(true), 3000);
-    return () => clearTimeout(timer);
-  }, []);
-
 const SimulatorPage = ({
   COLORS,
   setCurrentPage,
@@ -70,7 +54,7 @@ const SimulatorPage = ({
   declineAgentRun,
   scenarios,
   characters,
-  scrollContainerRef,
+  scrollContainerRef: injectedScrollContainerRef,
   addSystem,
   pendingAgentDecision,
   showReportPrompt,
@@ -84,6 +68,8 @@ const SimulatorPage = ({
   intermissionSec = 3,
   logTickMs = 200,
 }) => {
+
+  
   /* ----------------------------------------------------------
    🧩 상태
   ---------------------------------------------------------- */
@@ -98,7 +84,8 @@ const SimulatorPage = ({
   // 🎯 백엔드 데이터 구조 기반 state
   const [agentLogText, setAgentLogText] = useState("");     // <TerminalLog />용
   const [insightsList, setInsightsList] = useState([]);     // <InvestigationBoard />용
-  const scrollContainerRef = useRef(null);
+  const localScrollContainerRef = useRef(null);
+  const scrollRef = injectedScrollContainerRef ?? localScrollContainerRef;
   const [activeAgentTab, setActiveAgentTab] = useState("log");
   const [showBoardContent, setShowBoardContent] = useState(false);
 
@@ -116,7 +103,22 @@ const SimulatorPage = ({
     sub: "#BFB38A",
     blurple: "#A8862A",
   };
+  // 진행률 계산
+  const countChatMessages = (msgs = []) =>
+    msgs.filter((m) => (m?.type ?? m?._kind) === "chat").length;
 
+  useEffect(() => {
+    if (typeof setProgress !== "function") return;
+    const pct = Math.min(100, Math.round((countChatMessages(messages) / 10) * 100));
+    setProgress(pct);
+  }, [messages, setProgress]);
+
+  // 보드 표시 지연
+  useEffect(() => {
+    const timer = setTimeout(() => setShowBoardContent(true), 3000);
+    return () => clearTimeout(timer);
+  }, []);
+  
   /* ----------------------------------------------------------
    🏠 홈버튼 (초기화)
   ---------------------------------------------------------- */
@@ -197,7 +199,7 @@ const SimulatorPage = ({
   /* ----------------------------------------------------------
    🧠 에이전트 로그 (점진 표시)
   ---------------------------------------------------------- */
-  const agentLogText = useMemo(() => {
+  const computedAgentLogText = useMemo(() => {
     if (!sessionResult?.agentLogs) return "";
     return sessionResult.agentLogs
       .map((log) => `[${log.role}] ${log.content}`)
@@ -206,11 +208,11 @@ const SimulatorPage = ({
 
   const agentLogLines = useMemo(
     () =>
-      agentLogText
+      computedAgentLogText
         .split(/\r?\n/)
         .map((l) => l.trim())
         .filter(Boolean),
-    [agentLogText]
+    [computedAgentLogText]
   );
   const [displayedAgentLogText, setDisplayedAgentLogText] = useState("");
   const logIndexRef = useRef(0);
@@ -285,7 +287,7 @@ const SimulatorPage = ({
             {/* 왼쪽: 시나리오 / 캐릭터 / 대화 */}
             <div
               className="flex flex-col flex-1 px-6 py-6 overflow-y-auto space-y-6"
-              ref={scrollContainerRef}
+              ref={scrollRef}
             >
               {/* 1️⃣ 시나리오 선택 */}
               {needScenario && (
@@ -563,7 +565,7 @@ const SimulatorPage = ({
 
                <div className="flex flex-1 min-h-0">
             {/* 왼쪽: 대화 */}
-            <div className="flex-1 p-6 overflow-y-auto" ref={scrollContainerRef}>
+            <div className="flex-1 p-6 overflow-y-auto" ref={scrollRef}>
               {!messages.length && (
                 <SpinnerMessage simulationState={simulationState} COLORS={THEME} />
               )}
@@ -611,7 +613,7 @@ const SimulatorPage = ({
 
                 <div className="flex-1 overflow-auto">
                   {activeAgentTab === "log" ? (
-                    <TerminalLog logText={agentLogText} COLORS={THEME} />
+                    <TerminalLog logText={computedAgentLogText} COLORS={THEME} />
                   ) : showBoardContent ? (
                     <InvestigationBoard COLORS={THEME} insightsList={insightsList} />
                   ) : (

@@ -16,7 +16,7 @@ from app.routers.personalized import router as personalized_router
 from app.routers import react_agent_stream_router
 # React Agent 라우터만 추가
 from app.routers import react_agent_router
-
+from app.routers import turn_bus as turn_bus_router
 from app.routers import tts_router
 
 #langsmith
@@ -68,7 +68,7 @@ app.include_router(react_agent_router.router, prefix=settings.API_PREFIX)
 
 app.include_router(react_agent_stream_router.router, prefix=settings.API_PREFIX)
 # app.include_router(tts_router.router, prefix=settings.API_PREFIX)
-
+app.include_router(turn_bus_router.router)
 
 
 

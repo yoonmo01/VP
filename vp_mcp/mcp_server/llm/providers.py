@@ -5,15 +5,28 @@ from typing import Optional, Dict, Any, List
 import os
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.language_models.chat_models import BaseChatModel
-from app.core.logging import get_logger
-logger = get_logger(__name__)
 
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+from google.api_core.exceptions import NotFound as _GNotFound
+import logging
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────
 # 내부 유틸 (app/services/llm_providers.py 로직을 MCP에 맞게 이식)
 # ─────────────────────────────────────────────────────────
+
+def _resolve_gemini_model(name: Optional[str]) -> str:
+    if not name:
+        return "gemini-2.5-flash-lite"
+    n = name.strip()
+    # 필요한 별칭만 최소 반영 (원인인 1.5-flash 포함)
+    table = {
+        "gemini-1.5-flash": "gemini-1.5-flash-002",
+        "gemini-1.5-pro":   "gemini-1.5-pro-002",
+        "gemini-pro":       "gemini-1.0-pro",
+    }
+    return table.get(n, n)
 
 # STOP_SAFE_DEFAULT = "gpt-4o-2024-08-06"  # 안정판 (참고용)
 
@@ -57,11 +70,13 @@ def _gemini_chat(model: Optional[str] = None, temperature: float = 0.7) -> BaseC
     api_key = os.getenv("GOOGLE_API_KEY", "")
     if not api_key:
         raise RuntimeError("GOOGLE_API_KEY not set")
+    mdl = _resolve_gemini_model(model or "gemini-2.5-flash-lite")
     return ChatGoogleGenerativeAI(
-        model=model or "gemini-2.5-flash-lite",
+        model=mdl,
         google_api_key=api_key,
         temperature=temperature,
         timeout=600000,
+        api_version="v1",
     )
 
 def attacker_chat(model: Optional[str] = None, temperature: float = 0.7) -> BaseChatModel:
@@ -151,23 +166,29 @@ class _BaseLLM:
         # 모델명 접두로 프로바이더 선택 (app 코드 정책 반영)
         m = (model or "").lower()
         if m.startswith(("gpt", "o", "openai")):
-            provider = "openai"
             self.llm: BaseChatModel = _openai_chat(model, temperature)
         elif m.startswith("gemini"):
-            provider = "gemini"
-            self.llm = _gemini_chat(model, temperature)
+            self.llm = _gemini_chat(_resolve_gemini_model(model), temperature)
         else:
             # 기본은 OpenAI
-            provider = "openai(default)"
             self.llm = _openai_chat(model or "gpt-4o-mini-2024-07-18", temperature)
-        logger.info(f"[LLM:init] model={model} provider={provider} temperature={temperature}")
 
     def _invoke(self, messages: List):
-        logger.info(f"[LLM:invoke] model={self.model_name} len_messages={len(messages)}")
-        res = self.llm.invoke(messages)
-        out = getattr(res, "content", str(res)).strip()
-        logger.info(f"[LLM:done] model={self.model_name} out_len={len(out)}")
-        return out
+        try:
+            res = self.llm.invoke(messages)
+            return getattr(res, "content", str(res)).strip()
+        except _GNotFound:
+            # Gemini 계열 404일 때만 1회 폴백
+            name = getattr(self.llm, "model", getattr(self.llm, "model_name", "")).lower()
+            if "gemini" not in name:
+                raise
+            alt = _resolve_gemini_model(self.model_name)
+            if alt == self.model_name:
+                alt = "gemini-1.5-flash-002"  # 가장 흔한 대체
+            logger.warning(f"[Gemini] NotFound for '{self.model_name}', retry with '{alt}'")
+            self.llm = _gemini_chat(alt, self.temperature)
+            res = self.llm.invoke(messages)
+            return getattr(res, "content", str(res)).strip()
 
 class AttackerLLM(_BaseLLM):
     def next(

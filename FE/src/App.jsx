@@ -95,12 +95,23 @@ export async function* streamReactSimulation(payload = {}) {
     catch { push(e.data); }
   };
 
+  // 백엔드에서 실제로 쏘는 이름들까지 포함
   const eventTypes = [
-    "run_start","log","agent_action","tool_observation","agent_finish",
-    "result","run_end","ping","error",
-    "terminal" // ✅ 추가
+    "run_start",
+    "log",
+    "agent_action",
+    "tool_observation",
+    "agent_finish",
+    "new_message",        // ✅ 중요
+    "turn_event",         // (외부 sink fan-in)
+    "debug",
+    "result",
+    "run_end",
+    "ping",
+    "heartbeat",
+    "error",
+    "terminal",
   ];
-
   eventTypes.forEach((t) => {
     es.addEventListener(t, (e) => {
       try { push(JSON.parse(e.data)); }
@@ -158,6 +169,28 @@ function extractDialogueOrPlainText(s) {
   } catch (_) {}
   // 과한 공백 정리
   return cleaned.replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
+}
+
+function parseConversationLogContent(content) {
+  if (!content || typeof content !== "string") return null;
+  // "[conversation_log] {...}" 형태만 처리
+  const idx = content.indexOf("{");
+  if (idx < 0) return null;
+  try {
+    const obj = JSON.parse(content.slice(idx));
+    const caseId =
+      obj.case_id || obj.meta?.case_id || obj.log?.case_id || null;
+    const roundNo =
+      obj.meta?.round_no ||
+      obj.meta?.run_no ||
+      obj.stats?.round ||
+      obj.stats?.run ||
+      1;
+    const turns = Array.isArray(obj.turns) ? obj.turns : [];
+    return { caseId, roundNo: Number(roundNo) || 1, turns };
+  } catch (_) {
+    return null;
+  }
 }
 
 /* ================== App 컴포넌트 ================== */
@@ -313,6 +346,8 @@ const addChat = (sender, content, timestamp = null, senderLabel = null, side = n
       let currentRound = 0;
 
       for await (const event of streamReactSimulation(payload)) {
+        // 서버는 { type, content, ts } 구조를 씀 → content 우선
+        const evt = event?.content ?? event;
         console.log("[SSE Event]", event);
 
         if (event.type === "error") {
@@ -320,32 +355,32 @@ const addChat = (sender, content, timestamp = null, senderLabel = null, side = n
         }
 
         else if (event.type === "case_created") {
-          caseId = event.case_id;
+          caseId = evt.case_id;
           setCurrentCaseId(caseId);
           addSystem(`케이스 생성: ${caseId}`);
         }
         
         else if (event.type === "round_start") {
-          currentRound = event.round;
-          addSystem(event.message);
+          currentRound = evt.round;
+          addSystem(evt.message);
         }
         
         else if (event.type === "simulation_progress") {
           setSimulationState("RUNNING");
-          addSystem(event.message || `라운드 ${event.round} 진행 중...`);
+          addSystem(evt.message || `라운드 ${evt.round} 진행 중...`);
         }
         
         else if (event.type === "conversation_logs") {
           // 진행 상황만 업데이트
-          setProgress((event.round / totalRounds) * 100);
+          setProgress((evt.round / totalRounds) * 100);
 
           // ✅ 누락된 턴만 보정 (서버가 한꺼번에 보내줄 수 있으므로)
-          const logs = Array.isArray(event.logs) ? event.logs : [];
+          const logs = Array.isArray(evt.logs) ? evt.logs : [];
           const missing = logs
             .sort((a,b) => (a.turn_index ?? 0) - (b.turn_index ?? 0))
             .filter((log) => {
               const role = (log.role || "offender").toLowerCase();
-              const key = `${event.round}:${log.turn_index}:${role}`;
+              const key = `${evt.round}:${log.turn_index}:${role}`;
               return !seenTurnsRef.current.has(key);
             });
 
@@ -368,33 +403,68 @@ const addChat = (sender, content, timestamp = null, senderLabel = null, side = n
               turn: log.turn_index || log.turn,
             });
 
-            const key = `${event.round}:${log.turn_index}:${role}`;
+            const key = `${evt.round}:${log.turn_index}:${role}`;
             seenTurnsRef.current.add(key);
           }
 
           // 안내 메시지 (선택)
-          if (event.status === "no_logs") {
-            addSystem(`⚠️ 라운드 ${event.round} 로그를 가져오지 못했습니다.`);
+          if (evt.status === "no_logs") {
+            addSystem(`⚠️ 라운드 ${evt.round} 로그를 가져오지 못했습니다.`);
           }
           setSimulationState("RUNNING");
         }
         
         else if (event.type === "round_complete") {
           // conversation_logs에서 이미 처리했으므로 중복 방지
-          addSystem(`라운드 ${event.round} 완료 (${event.total_turns}턴)`);
+          addSystem(`라운드 ${evt.round} 완료 (${evt.total_turns}턴)`);
         }
+        // ✅ 백엔드가 [conversation_log] 묶음 로그만 보낼 때 프론트에서 발화별로 분해
+        else if (
+          event?.type === "log" &&
+          typeof event.content === "string" &&
+          event.content.startsWith("[conversation_log]")
+        ) {
+          const parsed = parseConversationLogContent(event.content);
+          if (parsed && parsed.turns.length) {
+            const roundNo = parsed.roundNo || 1;
+            // 진행률 살짝 올려주기(선택)
+            setProgress((p) => Math.min(100, p + 1));
+            setSimulationState("RUNNING");
 
+            parsed.turns.forEach((t, idx) => {
+              const role = (t.role || "offender").toLowerCase();
+              const raw = t.text || t.content || "";
+              const content = extractDialogueOrPlainText(raw);
+
+              const key = `${roundNo}:${idx}:${role}`;
+              if (seenTurnsRef.current.has(key)) return; // 중복 방지
+              seenTurnsRef.current.add(key);
+
+              const label =
+                role === "offender"
+                  ? (selectedScenario?.name || "피싱범")
+                  : (selectedCharacter?.name || "피해자");
+              const side = role === "offender" ? "left" : "right";
+              const ts = new Date().toLocaleTimeString();
+
+              addChat(role, content, ts, label, side, {
+                run: roundNo,
+                turn: idx,
+              });
+            });
+          }
+        }
         else if (event.type === "new_message") {
           // 중복 방지
-          const role = (event.role || "offender").toLowerCase();
-          const key = `${event.round}:${event.turn_index}:${event.role}`;
+          const role = (evt.role || "offender").toLowerCase();
+          const key = `${evt.round}:${evt.turn_index}:${role}`;
           if (seenTurnsRef.current.has(key)) {
             continue;
           }
           seenTurnsRef.current.add(key);
 
           // 내용 정리 (victim의 ```json``` 포함 케이스)
-          const raw = event.content || "";
+          const raw = evt.content || "";
           const content = extractDialogueOrPlainText(raw);
 
           const label =
@@ -403,14 +473,14 @@ const addChat = (sender, content, timestamp = null, senderLabel = null, side = n
               : (selectedCharacter?.name || "피해자");
 
           const side = role === "offender" ? "left" : "right";
-          const ts = event.created_kst
-            ? new Date(event.created_kst).toLocaleTimeString()
+          const ts = evt.created_kst
+            ? new Date(evt.created_kst).toLocaleTimeString()
             : new Date().toLocaleTimeString();
 
           // 바로 대화창에 append
           addChat(role, content, ts, label, side, {
-            run: event.round,
-            turn: event.turn_index,
+            run: evt.round,
+            turn: evt.turn_index,
           });
 
           // 스피너 감추기 / 진행중 표시
@@ -419,15 +489,11 @@ const addChat = (sender, content, timestamp = null, senderLabel = null, side = n
         }
         
         else if (event.type === "judgement") {
-          addSystem(
-            `라운드 ${event.round} 판정: ${event.phishing ? "피싱 성공" : "피싱 실패"} - ${event.reason}`
-          );
+          addSystem(`라운드 ${evt.round} 판정: ${evt.phishing ? "피싱 성공" : "피싱 실패"} - ${evt.reason}`);
         }
         
         else if (event.type === "guidance_generated") {
-          addSystem(
-            `라운드 ${event.round} 지침 생성: ${event.guidance?.categories?.join(", ") || "N/A"}`
-          );
+          addSystem(`라운드 ${evt.round} 지침 생성: ${evt.guidance?.categories?.join(", ") || "N/A"}`);
         }
         
         else if (event.type === "complete") {

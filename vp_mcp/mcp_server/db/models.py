@@ -1,4 +1,4 @@
-# models.py
+#VP\vp_mcp\mcp_server\db\models.py
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, Integer, Text
 from .base import Base

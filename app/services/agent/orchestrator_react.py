@@ -2,13 +2,12 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Tuple, Optional, Set, AsyncGenerator
 from dataclasses import dataclass, field
-import json
-import re
-import ast
+import json, re, ast, time, os
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
+from app.services.agent.turn_bus import set_stream_id as turnbus_set_stream_id, register_sink as turnbus_register_sink, unregister_sink as turnbus_unregister_sink
 
 from langchain.agents import create_react_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
@@ -48,6 +47,26 @@ _StreamState = Tuple[asyncio.AbstractEventLoop, asyncio.Queue, Set[asyncio.Queue
 
 _STREAMS: dict[str, _StreamState] = {}
 _current_stream_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("_current_stream_id", default=None)
+
+
+
+def register_turn_sink_for_stream(stream_id: str):
+    """
+    MCP 쪽에서 호출하는 콜백을 만들어 돌려준다.
+    이 콜백은 받아온 이벤트(dict)를 해당 stream_id의 main_q로 안전하게 push한다.
+    """
+    loop = _get_loop(stream_id)
+    main_q = _get_main_queue(stream_id)
+
+    def _sink(evt: dict):
+        try:
+            # evt에는 최소 {"type": "..."}가 있어야 함
+            loop.call_soon_threadsafe(main_q.put_nowait, evt)
+        except Exception as e:
+            # 마지막 보루: sink 실패는 스트림을 죽이지 않기
+            logger.warning("[turn_sink] push failed: %s", e)
+
+    return _sink
 
 def _ensure_stream(stream_id: str) -> _StreamState:
     state = _STREAMS.get(stream_id)
@@ -223,6 +242,27 @@ def _detach_global_sse_logging_handlers():
         if getattr(lg, _ATTACHED_FLAG, False):
             with contextlib.suppress(Exception):
                 delattr(lg, _ATTACHED_FLAG)
+
+def _emit_turns_fake_streaming(case_id: str, round_no: int, turns: list, delay_ms: int = 250):
+    """
+    MCP가 통으로 준 turns를 '가짜 스트리밍'으로 한 턴씩 SSE 전송한다.
+    (동기 sleep 사용: run_orchestrated 전체가 그만큼 지연되지만 구현 간단)
+    """
+    for idx, t in enumerate(turns):
+        try:
+            role = (t.get("role") or "").lower()
+            text = t.get("text") or t.get("content") or ""
+            _emit_to_stream("new_message", {
+                "case_id": case_id,
+                "round": round_no,
+                "role": role,
+                "turn_index": idx,
+                "content": text,
+                "created_kst": datetime.now().isoformat(),
+            })
+        finally:
+            # 턴 사이 약간의 간격(UX용)
+            time.sleep(max(0, delay_ms) / 1000.0)
 
 # (SSE) 라우터: /api/sse/agent/{stream_id}
 router = APIRouter(prefix="/api/sse", tags=["sse"])
@@ -488,6 +528,7 @@ def _ensure_admincase(db: Session, case_id: str, scenario_json: Dict[str, Any]) 
         db.commit()
         logger.info("[AdminCase upsert] case_id=%s | created=%s", case_id, created)
     except Exception as e:
+        db.rollback()
         logger.warning(f"[AdminCase upsert] failed: {e}")
 
 # ─────────────────────────────────────────────────────────
@@ -568,10 +609,59 @@ def _smart_print(*args, **kwargs):
         elif ("personalized_prevention" in data):
             tag = "prevention"
 
-        if tag:
-            safe = _truncate(data, 2000)
+        if not tag:
+            return
+
+        # 기본: SSE로는 그대로(프론트가 묶음 처리/디듀프에 활용)
+        safe = _truncate(data, 2000)
+        _emit_to_stream(tag, safe)
+
+        # 터미널 가독성 향상: conversation_log만 "요약 + 턴별 한 줄"로 찍기
+        if tag == "conversation_log":
+            import os
+            pretty = os.getenv("PRINT_CONVLOG_AS_TURNS", "1") != "0"
+            try:
+                case_id = (
+                    data.get("case_id")
+                    or (data.get("log") or {}).get("conversation_id")
+                    or ""
+                )
+                meta = data.get("meta") or {}
+                stats = data.get("stats") or {}
+                round_no = (
+                    meta.get("round_no")
+                    or meta.get("run_no")
+                    or stats.get("round")
+                    or stats.get("run")
+                    or 1
+                )
+                turns = data.get("turns") or []
+                total = len(turns)
+
+                if not pretty:
+                    # 예전처럼 한 줄 덤프하고 종료(옵션)
+                    logger.info("[conversation_log] %s", json.dumps(safe, ensure_ascii=False))
+                    return
+
+                # 요약 한 줄
+                logger.info(
+                    "[conversation_log] case_id=%s round=%s total_turns=%s",
+                    case_id, round_no, total
+                )
+                # 턴별 한 줄
+                for idx, t in enumerate(turns):
+                    role = (t.get("role") or "offender").lower()
+                    text = (t.get("text") or t.get("content") or "").replace("\n", " ")
+                    if len(text) > 200:
+                        text = text[:200] + "…"
+                    logger.info("[turn] run=%s idx=%02d role=%-7s %s", round_no, idx, role, text)
+            except Exception:
+                # 혹시 파싱이 실패하면 안전망으로 기존처럼 한 줄만
+               logger.info("[conversation_log] %s", json.dumps(safe, ensure_ascii=False))
+        else:
+            # 나머지 태그는 기존처럼 한 줄 요약만
             logger.info("[%s] %s", tag, json.dumps(safe, ensure_ascii=False))
-            _emit_to_stream(tag, safe)
+
     except Exception:
         # 로깅 중 예외는 전체 흐름 막지 않음
         pass
@@ -661,7 +751,7 @@ REACT_SYS = (
     "  Final Answer: 최종 요약(최종 case_id, 총 라운드 수, 각 라운드 판정 요약 포함)\n"
 )
 
-def build_agent_and_tools(db: Session, use_tavily: bool) -> Tuple[AgentExecutor, Any]:
+def build_agent_and_tools(db: Session, use_tavily: bool):
     llm = agent_chat(temperature=0.2)
     logger.info("[AgentLLM] model=%s", getattr(llm, "model_name", "unknown"))
 
@@ -702,9 +792,7 @@ def build_agent_and_tools(db: Session, use_tavily: bool) -> Tuple[AgentExecutor,
     )
 
     agent = create_react_agent(llm=llm, tools=tools, prompt=prompt)
-    ex = AgentExecutor(
-        agent=agent, tools=tools, verbose=True, handle_parsing_errors=True, max_iterations=30
-    )
+    ex = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True, max_iterations=30)
     return ex, mcp_manager
 
 # ─────────────────────────────────────────────────────────
@@ -714,6 +802,14 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
     # (SSE) 스트림 컨텍스트 시작: 프론트가 전달한 stream_id 사용(없으면 내부 생성)
     stream_id = str(payload.get("stream_id") or uuid.uuid4())
     token = _current_stream_id.set(stream_id)
+
+    turnbus_set_stream_id(stream_id)
+
+    def _sink(ev: Dict[str, Any]):
+        # ev는 이미 {"type":"new_message", ...} 형태
+        _emit_to_stream(ev.get("type", "new_message"), ev)    
+
+    turnbus_register_sink(stream_id, _sink)
 
     # (고급 SSE) 전역/외부 로거 핸들러 부착
     logger.addHandler(_sse_log_handler)
@@ -739,6 +835,15 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
         with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
             req = SimulationStartRequest(**payload)
             ex, mcp_manager = build_agent_and_tools(db, use_tavily=req.use_tavily)
+
+            # ★★★★★ 추가: 이 스트림에 묶인 턴 싱크 생성 → MCP에 주입
+            turn_sink = register_turn_sink_for_stream(stream_id)
+            if hasattr(mcp_manager, "set_turn_sink"):
+                mcp_manager.set_turn_sink(turn_sink)
+            elif hasattr(mcp_manager, "register_sink"):
+                mcp_manager.register_sink("turn", turn_sink)
+            else:
+                logger.warning("[MCP sink] mcp_manager에 sink 등록 API가 없음")
 
             cap = ThoughtCapture()
             used_tools: List[str] = []
@@ -783,6 +888,7 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "victim_profile": victim_profile_base,
                 "templates": templates_base,  # 스키마에 없다면 allowed_keys에서 제거
                 "max_turns": req.max_turns,
+                "stream_id": stream_id,
             }
 
             for round_no in range(1, max_rounds + 1):
@@ -892,7 +998,8 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 # (1) 휴리스틱 기반 1차 폴백: agent가 data로 감쌌거나 top-level missing이면 언랩 직접 호출
                 bad_top = _looks_like_missing_top_fields_error(sim_dict)
                 sent_wrapped = (cap.last_tool_input == {"data": sim_payload})
-                if (not sim_dict.get("ok") and bad_top) or sent_wrapped:
+                is_http_500 = (str(sim_dict.get("error")) == "http_error" and int(sim_dict.get("status") or 0) == 500)
+                if (not sim_dict.get("ok") and (bad_top or is_http_500)) or sent_wrapped:
                     logger.warning("[MCPFallback] agent가 data 래핑 또는 top-level missing → 툴 직접 호출(언랩)")
                     tool = _get_tool(ex, "mcp.simulator_run")
                     if not tool:
@@ -936,8 +1043,10 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 # 최종 실패 처리
                 if not sim_dict.get("ok"):
                     logger.error(
-                        "[SimulatorRunFail] error=%s | payload=%s",
-                        _truncate(sim_dict, 800),
+                        "[SimulatorRunFail] status=%s error=%s text=%s | payload=%s",
+                        sim_dict.get("status"),
+                        sim_dict.get("error"),
+                        _truncate(sim_dict.get("text"), 400),
                         json.dumps(sim_payload, ensure_ascii=False),
                     )
                     _emit_to_stream("error", {"where": "mcp.simulator_run", "error": _truncate(sim_dict, 800)})
@@ -961,6 +1070,8 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
                 turns = sim_dict.get("turns") or (sim_dict.get("log") or {}).get("turns") or []
                 ended_by = sim_dict.get("ended_by")
                 stats = sim_dict.get("stats") or {}
+                _emit_turns_fake_streaming(case_id, round_no, turns, delay_ms=int(os.getenv("TURN_STREAM_DELAY_MS", "200")))
+
                 try:
                     round_row = (
                         db.query(m.ConversationRound)
@@ -986,6 +1097,7 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
 
                     db.commit()
                 except Exception as e:
+                    db.rollback()
                     logger.warning(f"[DB] save conversation_round failed: {e}")
                 logger.info("[SIM] case_id=%s turns=%s ended_by=%s",
                             sim_dict.get("case_id"), len(turns), sim_dict.get("ended_by"))
@@ -1140,6 +1252,8 @@ def run_orchestrated(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
             }
 
     finally:
+        with contextlib.suppress(Exception):
+            turnbus_unregister_sink(stream_id)
         # 남은 버퍼 강제 flush
         with contextlib.suppress(Exception):
             tee_out.flush()
