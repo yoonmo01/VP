@@ -73,8 +73,6 @@ const SimulatorPage = ({
   intermissionSec = 3,
   logTickMs = 200,
 }) => {
-
-  
   /* ----------------------------------------------------------
    🧩 상태
   ---------------------------------------------------------- */
@@ -87,8 +85,8 @@ const SimulatorPage = ({
   const [openTTS, setOpenTTS] = useState(false);
 
   // 🎯 백엔드 데이터 구조 기반 state
-  const [agentLogText, setAgentLogText] = useState("");     // <TerminalLog />용
-  const [insightsList, setInsightsList] = useState([]);     // <InvestigationBoard />용
+  const [agentLogText, setAgentLogText] = useState("");     // <TerminalLog />용 (유지)
+  const [insightsList, setInsightsList] = useState([]);     // <InvestigationBoard />용 (유지)
   const localScrollContainerRef = useRef(null);
   const scrollRef = injectedScrollContainerRef ?? localScrollContainerRef;
   const [activeAgentTab, setActiveAgentTab] = useState("log");
@@ -108,13 +106,14 @@ const SimulatorPage = ({
     sub: "#BFB38A",
     blurple: "#A8862A",
   };
+
   // 진행률 계산
-  const countChatMessages = (msgs = []) =>
+  const countChatMessagesLocal = (msgs = []) =>
     msgs.filter((m) => (m?.type ?? m?._kind) === "chat").length;
 
   useEffect(() => {
     if (typeof setProgress !== "function") return;
-    const pct = Math.min(100, Math.round((countChatMessages(messages) / 10) * 100));
+    const pct = Math.min(100, Math.round((countChatMessagesLocal(messages) / 10) * 100));
     setProgress(pct);
   }, [messages, setProgress]);
 
@@ -123,7 +122,7 @@ const SimulatorPage = ({
     const timer = setTimeout(() => setShowBoardContent(true), 3000);
     return () => clearTimeout(timer);
   }, []);
-  
+
   /* ----------------------------------------------------------
    🏠 홈버튼 (초기화)
   ---------------------------------------------------------- */
@@ -159,16 +158,16 @@ const SimulatorPage = ({
     setShowCustomModal(false);
   };
 
-     // 메시지 표준화
-      const normalizeMessage = (m) => {
-        const role = (m?.sender || m?.role || "").toLowerCase();
-        return {
-          ...m,
-          label: role === "offender" ? "피싱범" : role === "victim" ? "피해자" : "시스템",
-          side: role === "offender" ? "left" : role === "victim" ? "right" : "center",
-          _kind: "chat",
-        };
-      };
+  // 메시지 표준화
+  const normalizeMessage = (m) => {
+    const role = (m?.sender || m?.role || "").toLowerCase();
+    return {
+      ...m,
+      label: role === "offender" ? "피싱범" : role === "victim" ? "피해자" : "시스템",
+      side: role === "offender" ? "left" : role === "victim" ? "right" : "center",
+      _kind: "chat",
+    };
+    };
 
   /* ----------------------------------------------------------
    📊 진행률 계산
@@ -176,12 +175,12 @@ const SimulatorPage = ({
   useEffect(() => {
     const pct = Math.min(
       100,
-      Math.round((countChatMessages(messages) / 10) * 100)
+      Math.round((countChatMessagesLocal(messages) / 10) * 100)
     );
     setProgress(pct);
   }, [messages, setProgress]);
 
-  const hasChatLog = useMemo(() => countChatMessages(messages) > 0, [messages]);
+  const hasChatLog = useMemo(() => countChatMessagesLocal(messages) > 0, [messages]);
 
   /* ----------------------------------------------------------
    🧠 에이전트 로그 (점진 표시)
@@ -272,10 +271,7 @@ const SimulatorPage = ({
           {/* 메인 */}
           <div className="flex-1 flex min-h-0" style={{ backgroundColor: THEME.bg }}>
             {/* 왼쪽: 시나리오 / 캐릭터 / 대화 */}
-            <div
-              className="flex flex-col flex-1 px-6 py-6 overflow-y-auto space-y-6"
-              ref={scrollRef}
-            >
+            <div className="flex flex-col flex-1 overflow-y-auto" ref={scrollRef}>
               {/* 1️⃣ 시나리오 선택 */}
               {needScenario && (
                 <SelectedCard
@@ -529,167 +525,112 @@ const SimulatorPage = ({
               )}
 
               {/* 3️⃣ 시뮬레이션 대화 */}
-              {/* {!needScenario && !needCharacter && (
+              {!needScenario && !needCharacter && (
                 <>
-                  {!messages.some((m) => m.type === "chat") ? (
-                    <SpinnerMessage simulationState={simulationState} COLORS={THEME} />
-                  ) : (
-                    messages.map((m, i) => (
-                      <MessageBubble
-                        key={i}
-                        message={m}
-                        selectedCharacter={selectedCharacter}
-                        victimImageUrl={selectedCharacter?.photo_path}
-                        COLORS={THEME}
-                      />
-                    ))
-                  )}
-                  {sessionResult?.preview && !hasAgentRun && (
-                    <InlinePhishingSummaryBox preview={sessionResult.preview} />
-                  )}
+                  <div className="flex flex-1 min-h-0">
+                    {/* 왼쪽: 대화 */}
+                    <div className="flex-1 p-6 overflow-y-auto" ref={scrollRef}>
+                      {/* ✅ 시뮬레이션 시작 버튼 (중앙 하단) */}
+                      {selectedScenario &&
+                        selectedCharacter &&
+                        simulationState === "IDLE" &&
+                        !pendingAgentDecision &&
+                        !showReportPrompt &&
+                        !hasInitialRun && (
+                          <div className="flex justify-center mt-6">
+                            <button
+                              onClick={startSimulation}
+                              className="px-8 py-3 rounded-lg font-semibold text-lg"
+                              style={{
+                                backgroundColor: THEME.blurple,
+                                color: THEME.white,
+                                boxShadow: "0 10px 24px rgba(0,0,0,.35)",
+                              }}
+                            >
+                              <Play className="inline mr-3" size={20} /> 시뮬레이션 시작
+                            </button>
+                          </div>
+                        )}
+                      {!messages.length && (
+                        <SpinnerMessage simulationState={simulationState} COLORS={THEME} />
+                      )}
+                      {messages.map((m, idx) => {
+                        const nm = normalizeMessage(m);
+                        return (
+                          <MessageBubble
+                            key={idx}
+                            message={nm}
+                            label={nm.label}
+                            side={nm.side}
+                            role={nm.role}
+                            COLORS={THEME}
+                          />
+                        );
+                      })}
+                    </div>
+
+                    {/* 오른쪽: 에이전트 로그/분석 (중복 제거 후 단일 유지) */}
+                    {hasChatLog && (
+                      <div
+                        className="min-h-0 flex flex-col"
+                        style={{
+                          flex: "0 0 30%",
+                          borderLeft: `1px solid ${THEME.border}`,
+                          backgroundColor: THEME.panelDark,
+                        }}
+                      >
+                        {/* 탭 선택 */}
+                        <div
+                          className="px-3 py-3 border-b"
+                          style={{ borderColor: THEME.border }}
+                        >
+                          <div className="flex gap-4">
+                            <button
+                              className={`flex items-center gap-2 text-sm font-semibold ${
+                                activeAgentTab === "log" ? "opacity-100" : "opacity-60"
+                              }`}
+                              onClick={() => setActiveAgentTab("log")}
+                              style={{ color: THEME.text }}
+                            >
+                              <Terminal size={16} /> 에이전트 로그
+                            </button>
+                            <button
+                              className={`flex items-center gap-2 text-sm font-semibold ${
+                                activeAgentTab === "insight" ? "opacity-100" : "opacity-60"
+                              }`}
+                              onClick={() => setActiveAgentTab("insight")}
+                              style={{ color: THEME.text }}
+                            >
+                              <Lightbulb size={16} /> 에이전트 분석
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 콘텐츠 */}
+                        <div className="flex-1 overflow-auto p-4">
+                          {activeAgentTab === "log" ? (
+                            <TerminalLog data={displayedAgentLogText} />
+                          ) : showBoardContent ? (
+                            <InvestigationBoard
+                              COLORS={THEME}
+                              insights={sessionResult?.insights}
+                            />
+                          ) : (
+                            <div
+                              className="p-4 text-sm opacity-70"
+                              style={{ color: THEME.sub }}
+                            >
+                              분석 데이터를 불러오는 중입니다...
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                 </>
-              )} */}
-
-               <div className="flex flex-1 min-h-0">
-            {/* 왼쪽: 대화 */}
-            <div className="flex-1 p-6 overflow-y-auto" ref={scrollRef}>
-              {!messages.length && (
-                <SpinnerMessage simulationState={simulationState} COLORS={THEME} />
               )}
-              {messages.map((m, idx) => {
-                const nm = normalizeMessage(m);
-                return (
-                  <MessageBubble
-                    key={idx}
-                    message={nm}
-                    label={nm.label}
-                    side={nm.side}
-                    role={nm.role}
-                    COLORS={THEME}
-                  />
-                );
-              })}
             </div>
-
-            {/* 오른쪽: 로그 / 분석 */}
-            {hasChatLog && (
-              <div
-                className="flex flex-col w-[30%] border-l"
-                style={{ borderColor: THEME.border, backgroundColor: THEME.panelDark }}
-              >
-                <div className="flex items-center border-b" style={{ borderColor: THEME.border }}>
-                  <button
-                    onClick={() => setActiveAgentTab("log")}
-                    className={`flex-1 py-2 font-semibold ${
-                      activeAgentTab === "log" ? "text-yellow-400" : "text-gray-400"
-                    }`}
-                  >
-                    <Terminal size={14} className="inline mr-2" />
-                    로그
-                  </button>
-                  <button
-                    onClick={() => setActiveAgentTab("insight")}
-                    className={`flex-1 py-2 font-semibold ${
-                      activeAgentTab === "insight" ? "text-yellow-400" : "text-gray-400"
-                    }`}
-                  >
-                    <Lightbulb size={14} className="inline mr-2" />
-                    분석
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-auto">
-                  {activeAgentTab === "log" ? (
-                    <TerminalLog logText={computedAgentLogText} COLORS={THEME} />
-                  ) : showBoardContent ? (
-                    <InvestigationBoard COLORS={THEME} insightsList={insightsList} />
-                  ) : (
-                    <div className="p-6 text-sm text-center" style={{ color: THEME.sub }}>
-                      분석 보드를 준비 중입니다...
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-              {/* 시뮬레이션 시작 버튼 */}
-              {selectedScenario &&
-                selectedCharacter &&
-                simulationState === "IDLE" &&
-                !pendingAgentDecision &&
-                !showReportPrompt &&
-                !hasInitialRun && (
-                  <div className="flex justify-center">
-                    <button
-                      onClick={startSimulation}
-                      className="px-8 py-3 rounded-lg font-semibold text-lg"
-                      style={{
-                        backgroundColor: THEME.blurple,
-                        color: THEME.white,
-                        boxShadow: "0 10px 24px rgba(0,0,0,.35)",
-                      }}
-                    >
-                      <Play className="inline mr-3" size={20} /> 시뮬레이션 시작
-                    </button>
-                  </div>
-                )}
-            </div>
-
-            {/* 오른쪽: 에이전트 로그/분석 보드 */}
-            {hasChatLog && (
-              <div
-                className="min-h-0 flex flex-col"
-                style={{
-                  flex: "0 0 30%",
-                  borderLeft: `1px solid ${THEME.border}`,
-                  backgroundColor: THEME.panelDark,
-                }}
-              >
-                {/* 탭 선택 */}
-                <div
-                  className="px-3 py-3 border-b"
-                  style={{ borderColor: THEME.border }}
-                >
-                  <div className="flex gap-4">
-                    <button
-                      className={`flex items-center gap-2 text-sm font-semibold ${
-                        activeAgentTab === "log" ? "opacity-100" : "opacity-60"
-                      }`}
-                      onClick={() => setActiveAgentTab("log")}
-                      style={{ color: THEME.text }}
-                    >
-                      <Terminal size={16} /> 에이전트 로그
-                    </button>
-                    <button
-                      className={`flex items-center gap-2 text-sm font-semibold ${
-                        activeAgentTab === "insight" ? "opacity-100" : "opacity-60"
-                      }`}
-                      onClick={() => setActiveAgentTab("insight")}
-                      style={{ color: THEME.text }}
-                    >
-                      <Lightbulb size={16} /> 에이전트 분석
-                    </button>
-                  </div>
-                </div>
-
-                {/* 콘텐츠 */}
-                <div className="flex-1 overflow-auto p-4">
-                  {activeAgentTab === "log" ? (
-                    <TerminalLog data={displayedAgentLogText} />
-                  ) : showBoardContent ? (
-                    <InvestigationBoard
-                      COLORS={THEME}
-                      insights={sessionResult?.insights}
-                    />
-                  ) : (
-                    <div className="p-4 text-sm opacity-70" style={{ color: THEME.sub }}>
-                      분석 데이터를 불러오는 중입니다...
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* 하단 진행률 */}
