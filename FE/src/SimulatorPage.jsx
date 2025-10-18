@@ -609,7 +609,7 @@ const SimulatorPage = ({
                         {/* 콘텐츠 */}
                         <div className="flex-1 overflow-auto p-4">
                           {activeAgentTab === "log" ? (
-                            <TerminalLog data={displayedAgentLogText} />
+                            <TerminalLog data={messages} />
                           ) : showBoardContent ? (
                             <InvestigationBoard
                               COLORS={THEME}
