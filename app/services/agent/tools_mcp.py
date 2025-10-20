@@ -228,31 +228,32 @@ def make_mcp_tools():
 
         # 실패면 재시도(최소 페이로드)
         if isinstance(res, dict) and res.get("ok") is False:
-            if res.get("error") == "http_error" and int(res.get("status") or 0) == 500:
-                logger.warning("[MCP] 500 → 최소 페이로드 재시도")
-                minimal_args = {
-                    "offender_id": model.offender_id,
-                    "victim_id": model.victim_id,
-                    "scenario": model.scenario,
-                    "victim_profile": model.victim_profile,
-                    "templates": token_templates,
-                    "max_turns": model.max_turns,
-                }
-                if model.guidance:
-                    minimal_args["guidance"] = {GUIDANCE_KEY: model.guidance.type, "text": model.guidance.text}
-                if model.case_id_override:
-                    minimal_args["case_id_override"] = model.case_id_override
-                if model.round_no:
-                    minimal_args["round_no"] = model.round_no
-                if eff_models:
-                    minimal_args["models"] = eff_models
+            return res
+        #     if res.get("error") == "http_error" and int(res.get("status") or 0) == 500:
+        #         logger.warning("[MCP] 500 → 최소 페이로드 재시도")
+        #         minimal_args = {
+        #             "offender_id": model.offender_id,
+        #             "victim_id": model.victim_id,
+        #             "scenario": model.scenario,
+        #             "victim_profile": model.victim_profile,
+        #             "templates": token_templates,
+        #             "max_turns": model.max_turns,
+        #         }
+        #         if model.guidance:
+        #             minimal_args["guidance"] = {GUIDANCE_KEY: model.guidance.type, "text": model.guidance.text}
+        #         if model.case_id_override:
+        #             minimal_args["case_id_override"] = model.case_id_override
+        #         if model.round_no:
+        #             minimal_args["round_no"] = model.round_no
+        #         if eff_models:
+        #             minimal_args["models"] = eff_models
 
-                res2 = _post_api_simulate(minimal_args)
-                if isinstance(res2, dict) and res2.get("ok") is False:
-                    return res2
-                res = res2
-            else:
-                return res
+        #         res2 = _post_api_simulate(minimal_args)
+        #         if isinstance(res2, dict) and res2.get("ok") is False:
+        #             return res2
+        #         res = res2
+        #     else:
+        #         return res
 
         # ---------- 6) 응답 평탄화 ----------
         result = None
