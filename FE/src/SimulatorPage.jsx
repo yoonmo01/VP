@@ -51,7 +51,7 @@ const SimulatorPage = ({
   selectedCharacter,
   setSelectedCharacter,
   simulationState,
-  //messages,
+  messages,
   setMessages, // ✅ 추가: 외부에서 messages state 관리 중
   sessionResult,
   progress,
@@ -75,9 +75,12 @@ const SimulatorPage = ({
   intermissionSec = 3,
   logTickMs = 200,
   victimImageUrl,
+  setCurrentCaseId,
+  setPersonalized,
+  setPreventionEvent, 
 }) => {
   //SSE 이벤트 실행 트리거
-  const { logs, messages, start, running, judgement, guidance, prevention } = useSimStream(setMessages);
+  const { logs, start, running, judgement, guidance, prevention } = useSimStream(setMessages);
      
   /* ----------------------------------------------------------
    🧩 상태
@@ -104,6 +107,36 @@ const SimulatorPage = ({
     return ev?.content ?? ev ?? null;
   }, [prevention]);
 
+  useEffect(() => {
+    if (!normalizedPrevention) return;
+    // normalizedPrevention는 event.content 전체일 확률 높음
+    // (네가 올려준 SSE 예시 기준)
+    const p = normalizedPrevention;
+    const personal = p.personalized_prevention || p; // 혹시 wrapping이 다를 수도 있어서 fallback
+
+    // 1) 개인화 예방법 App state 반영
+    if (personal) {
+      setPersonalized(personal);
+      addSystem("📢 개인화 예방법이 생성되었습니다.");
+    }
+
+    // 2) case_id 있으면 저장 → ReportPage가 admin-case 가져올 때 사용
+    if (p.case_id) {
+      setCurrentCaseId(p.case_id);
+    }
+
+    //  원본 prevention 이벤트도 App에 저장
+    if (typeof setPreventionEvent === "function") {
+      setPreventionEvent(prevention?.event ?? prevention ?? p);
+    }
+
+    // 3) 리포트 버튼 활성화를 위해 진행률 100%
+    if (typeof setProgress === "function") setProgress(100);
+
+    // 4) 자동 이동 원하면 주석 해제
+    // setCurrentPage("report");
+  }, [normalizedPrevention, setPersonalized, setCurrentCaseId, setProgress, setCurrentPage, addSystem, prevention, setPreventionEvent]);
+
   // 🎯 스크롤/탭/보드 상태
   const localScrollContainerRef = useRef(null);
   const scrollRef = injectedScrollContainerRef ?? localScrollContainerRef;
@@ -117,7 +150,7 @@ const SimulatorPage = ({
       if (!selectedScenario || !selectedCharacter) return;
       setShowStartButton(false); // 시뮬레이션 시작 버튼 숨기기
       start({
-        offender_id: 1,
+        offender_id: selectedScenario?.id ?? 1,
         victim_id: selectedCharacter?.id ?? 1,
         scenario_id: selectedScenario?.id ?? 1,
       });
@@ -197,6 +230,11 @@ const SimulatorPage = ({
       persisted: raw.persisted,
     };
   }, [judgement]);
+
+  useEffect(() => {
+    if (!normalizedJudgement?.case_id) return;
+    setCurrentCaseId?.(normalizedJudgement.case_id);
+  }, [normalizedJudgement, setCurrentCaseId]);
 
   // 진행률 계산에 쓰는 로컬 카운터(선언을 hasChatLog보다 위에 둠)
   const countChatMessagesLocal = (msgs = []) =>
@@ -378,7 +416,7 @@ const SimulatorPage = ({
             style={{ backgroundColor: THEME.bg }}
           >
             {/* 왼쪽: 시나리오 / 캐릭터 / 대화 */}
-            <div className="flex flex-col flex-1 overflow-y-auto" ref={scrollRef}>
+            <div className="flex flex-col flex-1 overflow-y-auto">
               {/* 1️⃣ 시나리오 선택 */}
               {needScenario && (
                 <SelectedCard

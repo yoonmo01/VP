@@ -36,6 +36,8 @@ const ReportPage = ({
   selectedCharacter,
   currentCaseId, // ★ App에서 전달
   victimImageUrl, // ✅ 피해자 이미지 URL 추가
+  personalized: personalizedFromApp,
+  preventionEvent,
 }) => {
   // --- THEME: 기존 COLORS을 덮어쓰는 어두운 경찰 엠블럼 팔레트 ---
   const THEME = {
@@ -204,10 +206,29 @@ const ReportPage = ({
     });
   }, [rawAgentLogs]);
 
+  // preventionEvent 최상위 content 뽑기 (hook에 따라 event.content or 자체 content)
+  const preventionRaw = useMemo(() => {
+    if (!preventionEvent) return null;
+    const ev = preventionEvent.event ?? preventionEvent;
+    return ev; // 리포트에서 raw 그대로도 보여줄 거라면 이걸 씀
+  }, [preventionEvent]);
+
+  const preventionContent = useMemo(() => {
+    const ev = preventionRaw;
+    if (!ev) return null;
+    return ev.personalized_prevention || ev.content || ev;
+  }, [preventionRaw]);
+
   // ====== 개인화 예방법 (Personalized) ======
-  const [personalized, setPersonalized] = useState(null);
+  const [personalized, setPersonalized] = useState(preventionContent ?? personalizedFromApp ?? null);
   const [personalizedLoading, setPersonalizedLoading] = useState(false);
   const [personalizedError, setPersonalizedError] = useState(null);
+
+  useEffect(() => {
+    // App에서 값이 갱신되면 즉시 반영
+    if (preventionContent) setPersonalized(preventionContent);
+    else if (personalizedFromApp) setPersonalized(personalizedFromApp);
+  }, [preventionContent, personalizedFromApp]);
 
   function pickLatestPersonalized(items = []) {
     if (!Array.isArray(items) || items.length === 0) return null;
@@ -224,10 +245,11 @@ const ReportPage = ({
   useEffect(() => {
     let mounted = true;
     (async () => {
-      if (!currentCaseId) {
-        setPersonalized(null);
+      if (personalizedFromApp) {
+        // 이미 최신이 있으니 API 스킵
         return;
       }
+      if (!currentCaseId) return;
       setPersonalizedLoading(true);
       setPersonalizedError(null);
       try {
@@ -249,7 +271,7 @@ const ReportPage = ({
     return () => {
       mounted = false;
     };
-  }, [currentCaseId]);
+  }, [currentCaseId, personalizedFromApp]);
 
   function RiskBadge({ level }) {
     const lv = String(level || "").toLowerCase(); // low / medium / high
@@ -285,7 +307,7 @@ const ReportPage = ({
           </button>
         </div>
 
-        {sessionResult ? (
+        {(sessionResult || adminCase || personalized) ? (
           <div className="flex gap-10 flex-1 overflow-hidden">
             {/* 왼쪽 패널 */}
             <div
